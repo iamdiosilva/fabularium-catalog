@@ -53,10 +53,8 @@ class _ModelDetailsPageState
         await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => ModelConfigFormPage(
-          folderPath:
-              _model.folderPath,
-          existingConfig:
-              _model.config,
+          folderPath: _model.folderPath,
+          existingConfig: _model.config,
         ),
       ),
     );
@@ -144,9 +142,7 @@ class _ModelDetailsPageState
 
     await Process.run(
       'explorer.exe',
-      [
-        directory.path,
-      ],
+      [directory.path],
     );
   }
 
@@ -161,8 +157,7 @@ class _ModelDetailsPageState
       );
     }
 
-    final downloads =
-        Directory(
+    final downloads = Directory(
       p.join(
         userProfile,
         'Downloads',
@@ -205,8 +200,7 @@ class _ModelDetailsPageState
       _model.name,
     );
 
-    final directory =
-        Directory(
+    final directory = Directory(
       p.join(
         downloadsPath,
         modelName,
@@ -242,8 +236,7 @@ class _ModelDetailsPageState
         archive.path,
       );
 
-      final destination =
-          Directory(
+      final destination = Directory(
         p.join(
           modelDirectory.path,
           _sanitizeFolderName(
@@ -314,8 +307,7 @@ class _ModelDetailsPageState
           archive.path,
         );
 
-        final destination =
-            Directory(
+        final destination = Directory(
           p.join(
             modelDirectory.path,
             _sanitizeFolderName(
@@ -375,23 +367,80 @@ class _ModelDetailsPageState
       );
     }
 
+    if (!await archive.exists()) {
+      throw Exception(
+        'The archive file was not found:\n'
+        '${archive.path}',
+      );
+    }
+
+    await destination.create(
+      recursive: true,
+    );
+
+    final archivePath =
+        p.normalize(archive.path);
+
+    final destinationPath =
+        p.normalize(destination.path);
+
     final result = await Process.run(
       sevenZip,
       [
         'x',
+        archivePath,
+        '-o$destinationPath',
         '-y',
-        archive.path,
-        '-o${destination.path}',
+        '-aoa',
       ],
-      runInShell: true,
+      runInShell: false,
     );
 
+    final stdout =
+        result.stdout.toString().trim();
+
+    final stderr =
+        result.stderr.toString().trim();
+
     if (result.exitCode != 0) {
+      final details = stderr.isNotEmpty
+          ? stderr
+          : stdout;
+
       throw Exception(
         '7-Zip could not extract:\n'
         '${p.basename(archive.path)}\n\n'
-        '${result.stderr}',
+        'Exit code: ${result.exitCode}\n'
+        '$details',
       );
+    }
+
+    if (!_hasExtractedFiles(
+      destination,
+    )) {
+      throw Exception(
+        '7-Zip completed the operation, '
+        'but no files were found in the destination folder.\n\n'
+        'Archive:\n'
+        '${archive.path}',
+      );
+    }
+  }
+
+  bool _hasExtractedFiles(
+    Directory directory,
+  ) {
+    try {
+      final files = directory
+          .listSync(
+            recursive: true,
+            followLinks: false,
+          )
+          .whereType<File>();
+
+      return files.isNotEmpty;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -457,9 +506,8 @@ class _ModelDetailsPageState
               path.trim();
 
           if (cleanPath.isNotEmpty &&
-              await File(
-                cleanPath,
-              ).exists()) {
+              await File(cleanPath)
+                  .exists()) {
             return cleanPath;
           }
         }
@@ -518,9 +566,7 @@ class _ModelDetailsPageState
     if (shouldOpen == true) {
       await Process.run(
         'explorer.exe',
-        [
-          directory.path,
-        ],
+        [directory.path],
       );
     }
   }
