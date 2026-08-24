@@ -4,6 +4,7 @@ import '../models/catalog_model.dart';
 import '../services/cagalog_scanner.dart';
 import 'model_detail_page.dart';
 import 'pending_models_page.dart';
+import 'telegram_login_page.dart';
 
 class CatalogPage extends StatefulWidget {
   final String fabulariumPath;
@@ -243,24 +244,38 @@ class _CatalogPageState
           'Fabularium Catalog',
         ),
         actions: [
-          IconButton(
-            tooltip: 'Register Models',
-            onPressed:
-                _openPendingModels,
-            icon: const Icon(
-              Icons.add_box_outlined,
-            ),
-          ),
-          IconButton(
-            tooltip: 'Refresh Catalog',
-            onPressed: _isLoading
-                ? null
-                : _loadCatalog,
-            icon: const Icon(
-              Icons.refresh,
-            ),
-          ),
-        ],
+  IconButton(
+    tooltip: 'Telegram',
+    onPressed: () {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) =>
+              const TelegramLoginPage(),
+        ),
+      );
+    },
+    icon: const Icon(
+      Icons.telegram,
+    ),
+  ),
+  IconButton(
+    tooltip: 'Register Models',
+    onPressed:
+        _openPendingModels,
+    icon: const Icon(
+      Icons.add_box_outlined,
+    ),
+  ),
+  IconButton(
+    tooltip: 'Refresh Catalog',
+    onPressed: _isLoading
+        ? null
+        : _loadCatalog,
+    icon: const Icon(
+      Icons.refresh,
+    ),
+  ),
+],
       ),
       body: _buildBody(),
     );

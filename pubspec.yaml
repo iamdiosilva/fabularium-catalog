@@ -39,6 +39,9 @@ dependencies:
   path: ^1.9.1
   archive: ^4.0.7
 
+  t: ^228.0.0
+  tg: ^0.0.20
+
 
 dev_dependencies:
   flutter_test:

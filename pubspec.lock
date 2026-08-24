@@ -57,6 +57,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.19.1"
+  convert:
+    dependency: transitive
+    description:
+      name: convert
+      sha256: b30acd5944035672bc15c6b7a8b47d773e41e2f17de064350988c5d02adb1c68
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.1.2"
   cross_file:
     dependency: transitive
     description:
@@ -65,6 +73,22 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.3.5+4"
+  crypto:
+    dependency: transitive
+    description:
+      name: crypto
+      sha256: c8ea0233063ba03258fbcf2ca4d6dadfefe14f02fab57702265467a19f27fadf
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.0.7"
+  cryptography:
+    dependency: transitive
+    description:
+      name: cryptography
+      sha256: "3eda3029d34ec9095a27a198ac9785630fe525c0eb6a49f3d575272f8e792ef0"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.9.0"
   cupertino_icons:
     dependency: "direct main"
     description:
@@ -216,6 +240,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.1.8"
+  pointycastle:
+    dependency: transitive
+    description:
+      name: pointycastle
+      sha256: "92aa3841d083cc4b0f4709b5c74fd6409a3e6ba833ffc7dc6a8fee096366acf5"
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.0.0"
   posix:
     dependency: transitive
     description:
@@ -261,6 +293,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.4.1"
+  t:
+    dependency: "direct main"
+    description:
+      name: t
+      sha256: da408574c0cfee6d4923c4c31ebaeb5c77c37e5e6e80da104b7dd304e53bfe88
+      url: "https://pub.dev"
+    source: hosted
+    version: "228.0.0"
   term_glyph:
     dependency: transitive
     description:
@@ -277,6 +317,22 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.7.7"
+  tg:
+    dependency: "direct main"
+    description:
+      name: tg
+      sha256: "5ec70b173ff47c593fef549f872190fad97e4b5f5ec92060dfcfaec02745df4d"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.0.20"
+  typed_data:
+    dependency: transitive
+    description:
+      name: typed_data
+      sha256: f9049c039ebfeb4cf7a7104a675823cd72dba8297f264b6637062516699fa006
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.4.0"
   vector_math:
     dependency: transitive
     description:
