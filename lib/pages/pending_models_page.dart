@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/pending_model.dart';
+import '../services/catalog_suggestions_service.dart';
 import '../services/pending_model_scanner.dart';
 
 class PendingModelsPage
@@ -368,6 +369,10 @@ class _ModelConfigFormPageState
   final _formKey =
       GlobalKey<FormState>();
 
+  final CatalogSuggestionsService
+      _suggestionsService =
+      CatalogSuggestionsService();
+
   late final TextEditingController
       _nameController;
 
@@ -392,6 +397,11 @@ class _ModelConfigFormPageState
   String _type = 'statue';
 
   bool _isSaving = false;
+
+  bool _isLoadingSuggestions = true;
+
+  CatalogSuggestions _suggestions =
+      const CatalogSuggestions.empty();
 
   @override
   void initState() {
@@ -475,6 +485,34 @@ class _ModelConfigFormPageState
         type.isNotEmpty) {
       _type = type;
     }
+
+    _loadSuggestions();
+  }
+
+  Future<void> _loadSuggestions() async {
+    try {
+      final suggestions =
+          await _suggestionsService.load(
+        widget.folderPath,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _suggestions = suggestions;
+        _isLoadingSuggestions = false;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isLoadingSuggestions = false;
+      });
+    }
   }
 
   @override
@@ -513,9 +551,14 @@ class _ModelConfigFormPageState
       config['studio'] =
           _studioController.text.trim();
 
-      config['category'] =
-          _categoryController.text
-              .trim();
+      final category =
+          _categoryController.text.trim();
+
+      if (category.isEmpty) {
+        config.remove('category');
+      } else {
+        config['category'] = category;
+      }
 
       config['type'] = _type;
 
@@ -616,6 +659,89 @@ class _ModelConfigFormPageState
         ),
       );
     }
+  }
+
+  List<String> _filterOptions(
+    List<String> options,
+    String query,
+  ) {
+    final normalizedQuery =
+        query.trim().toLowerCase();
+
+    if (normalizedQuery.isEmpty) {
+      return options;
+    }
+
+    return options
+        .where(
+          (option) => option
+              .toLowerCase()
+              .contains(
+                normalizedQuery,
+              ),
+        )
+        .toList();
+  }
+
+  String _getCurrentTagQuery(
+    String value,
+  ) {
+    final parts = value.split(',');
+
+    return parts.last.trim();
+  }
+
+  List<String> _getExistingTags(
+    String value,
+  ) {
+    final parts = value.split(',');
+
+    if (parts.length <= 1) {
+      return [];
+    }
+
+    return parts
+        .sublist(
+          0,
+          parts.length - 1,
+        )
+        .map(
+          (tag) =>
+              tag.trim().toLowerCase(),
+        )
+        .where(
+          (tag) => tag.isNotEmpty,
+        )
+        .toList();
+  }
+
+  void _selectTag(
+    String tag,
+  ) {
+    final value =
+        _tagsController.text;
+
+    final parts =
+        value.split(',');
+
+    if (parts.length == 1) {
+      _tagsController.text = '$tag, ';
+    } else {
+      parts[parts.length - 1] = ' $tag';
+
+      _tagsController.text =
+          '${parts.join(',').trim()}, ';
+    }
+
+    _tagsController.selection =
+        TextSelection.fromPosition(
+      TextPosition(
+        offset:
+            _tagsController.text.length,
+      ),
+    );
+
+    setState(() {});
   }
 
   @override
@@ -725,18 +851,73 @@ class _ModelConfigFormPageState
                     height: 16,
                   ),
 
-                  TextFormField(
-                    controller:
-                        _categoryController,
-                    decoration:
-                        const InputDecoration(
-                      labelText:
-                          'Category',
-                      hintText:
-                          'Example: One Piece',
-                      border:
-                          OutlineInputBorder(),
+                  Autocomplete<String>(
+                    initialValue:
+                        TextEditingValue(
+                      text:
+                          _categoryController
+                              .text,
                     ),
+                    optionsBuilder:
+                        (textEditingValue) {
+                      return _filterOptions(
+                        _suggestions.categories,
+                        textEditingValue.text,
+                      );
+                    },
+                    onSelected: (value) {
+                      _categoryController.text =
+                          value;
+                    },
+                    fieldViewBuilder: (
+                      context,
+                      controller,
+                      focusNode,
+                      onFieldSubmitted,
+                    ) {
+                      controller.text =
+                          _categoryController
+                              .text;
+
+                      controller.selection =
+                          TextSelection.fromPosition(
+                        TextPosition(
+                          offset:
+                              controller.text.length,
+                        ),
+                      );
+
+                      controller.addListener(() {
+                        _categoryController.text =
+                            controller.text;
+                      });
+
+                      return TextFormField(
+                        controller:
+                            controller,
+                        focusNode: focusNode,
+                        decoration:
+                            InputDecoration(
+                          labelText:
+                              'Category',
+                          hintText:
+                              _isLoadingSuggestions
+                                  ? 'Loading suggestions...'
+                                  : 'Example: One Piece',
+                          border:
+                              const OutlineInputBorder(),
+                          suffixIcon:
+                              _suggestions
+                                      .categories
+                                      .isNotEmpty
+                                  ? const Icon(
+                                      Icons
+                                          .arrow_drop_down,
+                                    )
+                                  : null,
+                        ),
+                      );
+                    },
                   ),
 
                   const SizedBox(
@@ -795,23 +976,88 @@ class _ModelConfigFormPageState
                     children: [
                       Expanded(
                         child:
-                            TextFormField(
-                          controller:
-                              _scaleController,
-                          decoration:
-                              const InputDecoration(
-                            labelText:
-                                'Scale',
-                            hintText:
-                                'Example: 1/6',
-                            border:
-                                OutlineInputBorder(),
+                            Autocomplete<String>(
+                          initialValue:
+                              TextEditingValue(
+                            text:
+                                _scaleController
+                                    .text,
                           ),
+                          optionsBuilder:
+                              (textEditingValue) {
+                            return _filterOptions(
+                              _suggestions.scales,
+                              textEditingValue
+                                  .text,
+                            );
+                          },
+                          onSelected: (value) {
+                            _scaleController.text =
+                                value;
+                          },
+                          fieldViewBuilder: (
+                            context,
+                            controller,
+                            focusNode,
+                            onFieldSubmitted,
+                          ) {
+                            controller.text =
+                                _scaleController
+                                    .text;
+
+                            controller.selection =
+                                TextSelection
+                                    .fromPosition(
+                              TextPosition(
+                                offset:
+                                    controller
+                                        .text
+                                        .length,
+                              ),
+                            );
+
+                            controller
+                                .addListener(() {
+                              _scaleController
+                                      .text =
+                                  controller
+                                      .text;
+                            });
+
+                            return TextFormField(
+                              controller:
+                                  controller,
+                              focusNode:
+                                  focusNode,
+                              decoration:
+                                  InputDecoration(
+                                labelText:
+                                    'Scale',
+                                hintText:
+                                    _isLoadingSuggestions
+                                        ? 'Loading...'
+                                        : 'Example: 1/6',
+                                border:
+                                    const OutlineInputBorder(),
+                                suffixIcon:
+                                    _suggestions
+                                            .scales
+                                            .isNotEmpty
+                                        ? const Icon(
+                                            Icons
+                                                .arrow_drop_down,
+                                          )
+                                        : null,
+                              ),
+                            );
+                          },
                         ),
                       ),
+
                       const SizedBox(
                         width: 16,
                       ),
+
                       Expanded(
                         child:
                             TextFormField(
@@ -838,15 +1084,34 @@ class _ModelConfigFormPageState
                   TextFormField(
                     controller:
                         _tagsController,
+                    onChanged: (_) {
+                      setState(() {});
+                    },
                     decoration:
-                        const InputDecoration(
+                        InputDecoration(
                       labelText: 'Tags',
                       hintText:
                           'anime, pirate, fantasy',
                       border:
-                          OutlineInputBorder(),
+                          const OutlineInputBorder(),
+                      suffixIcon:
+                          _suggestions.tags.isNotEmpty
+                              ? const Icon(
+                                  Icons.sell_outlined,
+                                )
+                              : null,
                     ),
                   ),
+
+                  if (!_isLoadingSuggestions &&
+                      _suggestions
+                          .tags
+                          .isNotEmpty) ...[
+                    const SizedBox(
+                      height: 8,
+                    ),
+                    _buildTagSuggestions(),
+                  ],
 
                   const SizedBox(
                     height: 16,
@@ -905,6 +1170,47 @@ class _ModelConfigFormPageState
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildTagSuggestions() {
+    final query =
+        _getCurrentTagQuery(
+      _tagsController.text,
+    );
+
+    final existingTags =
+        _getExistingTags(
+      _tagsController.text,
+    );
+
+    final suggestions =
+        _filterOptions(
+      _suggestions.tags,
+      query,
+    ).where(
+      (tag) =>
+          !existingTags.contains(
+        tag.toLowerCase(),
+      ),
+    ).take(12).toList();
+
+    if (suggestions.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: suggestions.map(
+        (tag) {
+          return ActionChip(
+            label: Text(tag),
+            onPressed: () =>
+                _selectTag(tag),
+          );
+        },
+      ).toList(),
     );
   }
 }
