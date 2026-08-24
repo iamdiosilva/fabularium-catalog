@@ -8,8 +8,7 @@ import '../models/pending_model.dart';
 import '../services/catalog_suggestions_service.dart';
 import '../services/pending_model_scanner.dart';
 
-class PendingModelsPage
-    extends StatefulWidget {
+class PendingModelsPage extends StatefulWidget {
   final String fabulariumPath;
 
   const PendingModelsPage({
@@ -18,22 +17,17 @@ class PendingModelsPage
   });
 
   @override
-  State<PendingModelsPage> createState() =>
-      _PendingModelsPageState();
+  State<PendingModelsPage> createState() => _PendingModelsPageState();
 }
 
-class _PendingModelsPageState
-    extends State<PendingModelsPage> {
-  final PendingModelScanner
-      _scanner =
-      PendingModelScanner();
+class _PendingModelsPageState extends State<PendingModelsPage> {
+  final PendingModelScanner _scanner = PendingModelScanner();
 
   bool _isLoading = true;
 
   String? _error;
 
-  List<PendingModel> _models =
-      [];
+  List<PendingModel> _models = [];
 
   @override
   void initState() {
@@ -49,8 +43,7 @@ class _PendingModelsPageState
     });
 
     try {
-      final models =
-          await _scanner.scan(
+      final models = await _scanner.scan(
         widget.fabulariumPath,
       );
 
@@ -77,14 +70,10 @@ class _PendingModelsPageState
   Future<void> _openForm(
     PendingModel model,
   ) async {
-    final result =
-        await Navigator.of(context)
-            .push<bool>(
+    final result = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) =>
-            ModelConfigFormPage(
-          folderPath:
-              model.folderPath,
+        builder: (_) => ModelConfigFormPage(
+          folderPath: model.folderPath,
           pendingModel: model,
         ),
       ),
@@ -96,9 +85,7 @@ class _PendingModelsPageState
   }
 
   @override
-  Widget build(
-    BuildContext context,
-  ) {
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -107,10 +94,7 @@ class _PendingModelsPageState
         actions: [
           IconButton(
             tooltip: 'Refresh',
-            onPressed:
-                _isLoading
-                    ? null
-                    : _loadModels,
+            onPressed: _isLoading ? null : _loadModels,
             icon: const Icon(
               Icons.refresh,
             ),
@@ -124,21 +108,18 @@ class _PendingModelsPageState
   Widget _buildBody() {
     if (_isLoading) {
       return const Center(
-        child:
-            CircularProgressIndicator(),
+        child: CircularProgressIndicator(),
       );
     }
 
     if (_error != null) {
       return Center(
         child: Padding(
-          padding:
-              const EdgeInsets.all(
+          padding: const EdgeInsets.all(
             24,
           ),
           child: Column(
-            mainAxisSize:
-                MainAxisSize.min,
+            mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(
                 Icons.error_outline,
@@ -155,15 +136,13 @@ class _PendingModelsPageState
               ),
               Text(
                 _error!,
-                textAlign:
-                    TextAlign.center,
+                textAlign: TextAlign.center,
               ),
               const SizedBox(
                 height: 20,
               ),
               FilledButton.icon(
-                onPressed:
-                    _loadModels,
+                onPressed: _loadModels,
                 icon: const Icon(
                   Icons.refresh,
                 ),
@@ -180,12 +159,10 @@ class _PendingModelsPageState
     if (_models.isEmpty) {
       return const Center(
         child: Column(
-          mainAxisSize:
-              MainAxisSize.min,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons
-                  .check_circle_outline,
+              Icons.check_circle_outline,
               size: 64,
             ),
             SizedBox(
@@ -202,25 +179,20 @@ class _PendingModelsPageState
     return Column(
       children: [
         Padding(
-          padding:
-              const EdgeInsets.all(
+          padding: const EdgeInsets.all(
             16,
           ),
           child: Align(
-            alignment:
-                Alignment.centerLeft,
+            alignment: Alignment.centerLeft,
             child: Text(
               '${_models.length} pending model(s)',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium,
+              style: Theme.of(context).textTheme.titleMedium,
             ),
           ),
         ),
         Expanded(
           child: GridView.builder(
-            padding:
-                const EdgeInsets.all(
+            padding: const EdgeInsets.all(
               16,
             ),
             gridDelegate:
@@ -230,10 +202,8 @@ class _PendingModelsPageState
               crossAxisSpacing: 16,
               mainAxisSpacing: 16,
             ),
-            itemCount:
-                _models.length,
-            itemBuilder:
-                (context, index) {
+            itemCount: _models.length,
+            itemBuilder: (context, index) {
               return _buildModelCard(
                 _models[index],
               );
@@ -247,20 +217,16 @@ class _PendingModelsPageState
   Widget _buildModelCard(
     PendingModel model,
   ) {
-    final image =
-        model.images.isNotEmpty
-            ? model.images.first
-            : null;
+    final image = model.images.isNotEmpty
+        ? model.images.first
+        : null;
 
     return Card(
-      clipBehavior:
-          Clip.antiAlias,
+      clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () =>
-            _openForm(model),
+        onTap: () => _openForm(model),
         child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.stretch,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(
               child: image != null
@@ -271,32 +237,24 @@ class _PendingModelsPageState
                     )
                   : const Center(
                       child: Icon(
-                        Icons
-                            .image_outlined,
+                        Icons.image_outlined,
                         size: 64,
                       ),
                     ),
             ),
             Padding(
-              padding:
-                  const EdgeInsets.all(
+              padding: const EdgeInsets.all(
                 16,
               ),
               child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment
-                        .start,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     model.folderName,
                     maxLines: 2,
-                    overflow:
-                        TextOverflow
-                            .ellipsis,
-                    style:
-                        const TextStyle(
-                      fontWeight:
-                          FontWeight.bold,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
                       fontSize: 16,
                     ),
                   ),
@@ -310,21 +268,15 @@ class _PendingModelsPageState
                     height: 12,
                   ),
                   SizedBox(
-                    width:
-                        double.infinity,
-                    child:
-                        OutlinedButton
-                            .icon(
-                      onPressed: () =>
-                          _openForm(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () => _openForm(
                         model,
                       ),
                       icon: const Icon(
-                        Icons
-                            .edit_outlined,
+                        Icons.edit_outlined,
                       ),
-                      label:
-                          const Text(
+                      label: const Text(
                         'Register',
                       ),
                     ),
@@ -339,15 +291,12 @@ class _PendingModelsPageState
   }
 }
 
-class ModelConfigFormPage
-    extends StatefulWidget {
+class ModelConfigFormPage extends StatefulWidget {
   final String folderPath;
 
-  final PendingModel?
-      pendingModel;
+  final PendingModel? pendingModel;
 
-  final Map<String, dynamic>?
-      existingConfig;
+  final Map<String, dynamic>? existingConfig;
 
   const ModelConfigFormPage({
     super.key,
@@ -356,8 +305,7 @@ class ModelConfigFormPage
     this.existingConfig,
   });
 
-  bool get isEditing =>
-      existingConfig != null;
+  bool get isEditing => existingConfig != null;
 
   @override
   State<ModelConfigFormPage> createState() =>
@@ -366,33 +314,24 @@ class ModelConfigFormPage
 
 class _ModelConfigFormPageState
     extends State<ModelConfigFormPage> {
-  final _formKey =
-      GlobalKey<FormState>();
+  final _formKey = GlobalKey<FormState>();
 
-  final CatalogSuggestionsService
-      _suggestionsService =
+  final CatalogSuggestionsService _suggestionsService =
       CatalogSuggestionsService();
 
-  late final TextEditingController
-      _nameController;
+  late final TextEditingController _nameController;
 
-  late final TextEditingController
-      _studioController;
+  late final TextEditingController _studioController;
 
-  late final TextEditingController
-      _categoryController;
+  late final TextEditingController _categoryController;
 
-  late final TextEditingController
-      _scaleController;
+  late final TextEditingController _scaleController;
 
-  late final TextEditingController
-      _heightController;
+  late final TextEditingController _heightController;
 
-  late final TextEditingController
-      _tagsController;
+  late final TextEditingController _tagsController;
 
-  late final TextEditingController
-      _descriptionController;
+  late final TextEditingController _descriptionController;
 
   String _type = 'statue';
 
@@ -408,81 +347,53 @@ class _ModelConfigFormPageState
     super.initState();
 
     final config =
-        widget.existingConfig ??
-            <String, dynamic>{};
+        widget.existingConfig ?? <String, dynamic>{};
 
-    _nameController =
-        TextEditingController(
+    _nameController = TextEditingController(
       text:
-          config['name']
-              ?.toString() ??
-          widget.pendingModel
-              ?.folderName ??
+          config['name']?.toString() ??
+          widget.pendingModel?.folderName ??
           '',
     );
 
-    _studioController =
-        TextEditingController(
+    _studioController = TextEditingController(
       text:
-          config['studio']
-              ?.toString() ??
-          widget.pendingModel
-              ?.studioName ??
+          config['studio']?.toString() ??
+          widget.pendingModel?.studioName ??
           '',
     );
 
-    _categoryController =
-        TextEditingController(
-      text:
-          config['category']
-              ?.toString() ??
-          '',
+    _categoryController = TextEditingController(
+      text: config['category']?.toString() ?? '',
     );
 
-    _scaleController =
-        TextEditingController(
-      text:
-          config['scale']
-              ?.toString() ??
-          '',
+    _scaleController = TextEditingController(
+      text: config['scale']?.toString() ?? '',
     );
 
-    _heightController =
-        TextEditingController(
-      text:
-          config['height']
-              ?.toString() ??
-          '',
+    _heightController = TextEditingController(
+      text: config['height']?.toString() ?? '',
     );
 
-    final tags =
-        config['tags'];
+    final tags = config['tags'];
 
-    _tagsController =
-        TextEditingController(
+    _tagsController = TextEditingController(
       text: tags is List
           ? tags
               .map(
-                (tag) =>
-                    tag.toString(),
+                (tag) => tag.toString(),
               )
               .join(', ')
           : '',
     );
 
-    _descriptionController =
-        TextEditingController(
-      text:
-          config['description']
-                  ?.toString() ??
-              '',
+    _descriptionController = TextEditingController(
+      text: config['description']?.toString() ?? '',
     );
 
-    final type =
-        config['type']?.toString();
+    final type = config['type']?.toString();
 
-    if (type != null &&
-        type.isNotEmpty) {
+    if (type != null && type.isNotEmpty) {
       _type = type;
     }
 
@@ -529,8 +440,7 @@ class _ModelConfigFormPageState
   }
 
   Future<void> _save() async {
-    if (!_formKey.currentState!
-        .validate()) {
+    if (!_formKey.currentState!.validate()) {
       return;
     }
 
@@ -539,8 +449,7 @@ class _ModelConfigFormPageState
     });
 
     try {
-      final config =
-          Map<String, dynamic>.from(
+      final config = Map<String, dynamic>.from(
         widget.existingConfig ??
             <String, dynamic>{},
       );
@@ -580,15 +489,13 @@ class _ModelConfigFormPageState
         config['height'] = height;
       }
 
-      final tags = _tagsController
-          .text
+      final tags = _tagsController.text
           .split(',')
           .map(
             (tag) => tag.trim(),
           )
           .where(
-            (tag) =>
-                tag.isNotEmpty,
+            (tag) => tag.isNotEmpty,
           )
           .toList();
 
@@ -599,17 +506,14 @@ class _ModelConfigFormPageState
       }
 
       final description =
-          _descriptionController
-              .text
-              .trim();
+          _descriptionController.text.trim();
 
       if (description.isEmpty) {
         config.remove(
           'description',
         );
       } else {
-        config['description'] =
-            description;
+        config['description'] = description;
       }
 
       final configFile = File(
@@ -629,8 +533,7 @@ class _ModelConfigFormPageState
         return;
       }
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
+      ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             widget.isEditing
@@ -650,8 +553,7 @@ class _ModelConfigFormPageState
         _isSaving = false;
       });
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
+      ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             'Error saving configuration: $e',
@@ -706,8 +608,7 @@ class _ModelConfigFormPageState
           parts.length - 1,
         )
         .map(
-          (tag) =>
-              tag.trim().toLowerCase(),
+          (tag) => tag.trim().toLowerCase(),
         )
         .where(
           (tag) => tag.isNotEmpty,
@@ -718,11 +619,9 @@ class _ModelConfigFormPageState
   void _selectTag(
     String tag,
   ) {
-    final value =
-        _tagsController.text;
+    final value = _tagsController.text;
 
-    final parts =
-        value.split(',');
+    final parts = value.split(',');
 
     if (parts.length == 1) {
       _tagsController.text = '$tag, ';
@@ -736,8 +635,7 @@ class _ModelConfigFormPageState
     _tagsController.selection =
         TextSelection.fromPosition(
       TextPosition(
-        offset:
-            _tagsController.text.length,
+        offset: _tagsController.text.length,
       ),
     );
 
@@ -745,9 +643,7 @@ class _ModelConfigFormPageState
   }
 
   @override
-  Widget build(
-    BuildContext context,
-  ) {
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -758,38 +654,28 @@ class _ModelConfigFormPageState
       ),
       body: Center(
         child: ConstrainedBox(
-          constraints:
-              const BoxConstraints(
+          constraints: const BoxConstraints(
             maxWidth: 700,
           ),
-          child:
-              SingleChildScrollView(
-            padding:
-                const EdgeInsets.all(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(
               24,
             ),
             child: Form(
               key: _formKey,
               child: Column(
                 crossAxisAlignment:
-                    CrossAxisAlignment
-                        .stretch,
+                    CrossAxisAlignment.stretch,
                 children: [
-                  if (widget.pendingModel !=
-                          null &&
-                      widget.pendingModel!
-                          .images
-                          .isNotEmpty)
+                  if (widget.pendingModel != null &&
+                      widget.pendingModel!.images.isNotEmpty)
                     ClipRRect(
                       borderRadius:
                           BorderRadius.circular(
                         12,
                       ),
                       child: Image.file(
-                        widget
-                            .pendingModel!
-                            .images
-                            .first,
+                        widget.pendingModel!.images.first,
                         height: 300,
                         fit: BoxFit.contain,
                       ),
@@ -800,20 +686,15 @@ class _ModelConfigFormPageState
                   ),
 
                   TextFormField(
-                    controller:
-                        _nameController,
+                    controller: _nameController,
                     decoration:
                         const InputDecoration(
                       labelText: 'Name',
-                      border:
-                          OutlineInputBorder(),
+                      border: OutlineInputBorder(),
                     ),
                     validator: (value) {
-                      if (value ==
-                              null ||
-                          value
-                              .trim()
-                              .isEmpty) {
+                      if (value == null ||
+                          value.trim().isEmpty) {
                         return 'Enter the model name.';
                       }
 
@@ -826,20 +707,15 @@ class _ModelConfigFormPageState
                   ),
 
                   TextFormField(
-                    controller:
-                        _studioController,
+                    controller: _studioController,
                     decoration:
                         const InputDecoration(
                       labelText: 'Studio',
-                      border:
-                          OutlineInputBorder(),
+                      border: OutlineInputBorder(),
                     ),
                     validator: (value) {
-                      if (value ==
-                              null ||
-                          value
-                              .trim()
-                              .isEmpty) {
+                      if (value == null ||
+                          value.trim().isEmpty) {
                         return 'Enter the studio name.';
                       }
 
@@ -852,11 +728,8 @@ class _ModelConfigFormPageState
                   ),
 
                   Autocomplete<String>(
-                    initialValue:
-                        TextEditingValue(
-                      text:
-                          _categoryController
-                              .text,
+                    initialValue: TextEditingValue(
+                      text: _categoryController.text,
                     ),
                     optionsBuilder:
                         (textEditingValue) {
@@ -866,8 +739,7 @@ class _ModelConfigFormPageState
                       );
                     },
                     onSelected: (value) {
-                      _categoryController.text =
-                          value;
+                      _categoryController.text = value;
                     },
                     fieldViewBuilder: (
                       context,
@@ -875,31 +747,59 @@ class _ModelConfigFormPageState
                       focusNode,
                       onFieldSubmitted,
                     ) {
-                      controller.text =
-                          _categoryController
-                              .text;
-
-                      controller.selection =
-                          TextSelection.fromPosition(
-                        TextPosition(
-                          offset:
-                              controller.text.length,
-                        ),
-                      );
-
-                      controller.addListener(() {
-                        _categoryController.text =
-                            controller.text;
-                      });
+                      if (controller.text !=
+                          _categoryController.text) {
+                        controller.value =
+                            TextEditingValue(
+                          text: _categoryController.text,
+                          selection:
+                              TextSelection.collapsed(
+                            offset:
+                                _categoryController
+                                    .text
+                                    .length,
+                          ),
+                        );
+                      }
 
                       return TextFormField(
-                        controller:
-                            controller,
+                        controller: controller,
                         focusNode: focusNode,
+                        onChanged: (value) {
+                          _categoryController.text =
+                              value;
+                        },
+                        onFieldSubmitted: (value) {
+                          final options =
+                              _filterOptions(
+                            _suggestions.categories,
+                            value,
+                          );
+
+                          if (options.isNotEmpty) {
+                            final selected =
+                                options.first;
+
+                            controller.value =
+                                TextEditingValue(
+                              text: selected,
+                              selection:
+                                  TextSelection
+                                      .collapsed(
+                                offset:
+                                    selected.length,
+                              ),
+                            );
+
+                            _categoryController.text =
+                                selected;
+
+                            onFieldSubmitted();
+                          }
+                        },
                         decoration:
                             InputDecoration(
-                          labelText:
-                              'Category',
+                          labelText: 'Category',
                           hintText:
                               _isLoadingSuggestions
                                   ? 'Loading suggestions...'
@@ -911,8 +811,7 @@ class _ModelConfigFormPageState
                                       .categories
                                       .isNotEmpty
                                   ? const Icon(
-                                      Icons
-                                          .arrow_drop_down,
+                                      Icons.arrow_drop_down,
                                     )
                                   : null,
                         ),
@@ -924,41 +823,33 @@ class _ModelConfigFormPageState
                     height: 16,
                   ),
 
-                  DropdownButtonFormField<
-                      String>(
-                    initialValue:
-                        _type,
+                  DropdownButtonFormField<String>(
+                    initialValue: _type,
                     decoration:
                         const InputDecoration(
                       labelText: 'Type',
-                      border:
-                          OutlineInputBorder(),
+                      border: OutlineInputBorder(),
                     ),
                     items: const [
                       DropdownMenuItem(
                         value: 'statue',
-                        child:
-                            Text('Statue'),
+                        child: Text('Statue'),
                       ),
                       DropdownMenuItem(
                         value: 'bust',
-                        child:
-                            Text('Bust'),
+                        child: Text('Bust'),
                       ),
                       DropdownMenuItem(
                         value: 'miniature',
-                        child:
-                            Text('Miniature'),
+                        child: Text('Miniature'),
                       ),
                       DropdownMenuItem(
                         value: 'diorama',
-                        child:
-                            Text('Diorama'),
+                        child: Text('Diorama'),
                       ),
                     ],
                     onChanged: (value) {
-                      if (value ==
-                          null) {
+                      if (value == null) {
                         return;
                       }
 
@@ -975,20 +866,16 @@ class _ModelConfigFormPageState
                   Row(
                     children: [
                       Expanded(
-                        child:
-                            Autocomplete<String>(
+                        child: Autocomplete<String>(
                           initialValue:
                               TextEditingValue(
-                            text:
-                                _scaleController
-                                    .text,
+                            text: _scaleController.text,
                           ),
                           optionsBuilder:
                               (textEditingValue) {
                             return _filterOptions(
                               _suggestions.scales,
-                              textEditingValue
-                                  .text,
+                              textEditingValue.text,
                             );
                           },
                           onSelected: (value) {
@@ -1001,38 +888,60 @@ class _ModelConfigFormPageState
                             focusNode,
                             onFieldSubmitted,
                           ) {
-                            controller.text =
-                                _scaleController
-                                    .text;
-
-                            controller.selection =
-                                TextSelection
-                                    .fromPosition(
-                              TextPosition(
-                                offset:
-                                    controller
-                                        .text
-                                        .length,
-                              ),
-                            );
-
-                            controller
-                                .addListener(() {
-                              _scaleController
-                                      .text =
-                                  controller
-                                      .text;
-                            });
+                            if (controller.text !=
+                                _scaleController.text) {
+                              controller.value =
+                                  TextEditingValue(
+                                text: _scaleController.text,
+                                selection:
+                                    TextSelection
+                                        .collapsed(
+                                  offset:
+                                      _scaleController
+                                          .text
+                                          .length,
+                                ),
+                              );
+                            }
 
                             return TextFormField(
-                              controller:
-                                  controller,
-                              focusNode:
-                                  focusNode,
+                              controller: controller,
+                              focusNode: focusNode,
+                              onChanged: (value) {
+                                _scaleController.text =
+                                    value;
+                              },
+                              onFieldSubmitted: (value) {
+                                final options =
+                                    _filterOptions(
+                                  _suggestions.scales,
+                                  value,
+                                );
+
+                                if (options.isNotEmpty) {
+                                  final selected =
+                                      options.first;
+
+                                  controller.value =
+                                      TextEditingValue(
+                                    text: selected,
+                                    selection:
+                                        TextSelection
+                                            .collapsed(
+                                      offset:
+                                          selected.length,
+                                    ),
+                                  );
+
+                                  _scaleController.text =
+                                      selected;
+
+                                  onFieldSubmitted();
+                                }
+                              },
                               decoration:
                                   InputDecoration(
-                                labelText:
-                                    'Scale',
+                                labelText: 'Scale',
                                 hintText:
                                     _isLoadingSuggestions
                                         ? 'Loading...'
@@ -1059,18 +968,13 @@ class _ModelConfigFormPageState
                       ),
 
                       Expanded(
-                        child:
-                            TextFormField(
-                          controller:
-                              _heightController,
+                        child: TextFormField(
+                          controller: _heightController,
                           decoration:
                               const InputDecoration(
-                            labelText:
-                                'Height',
-                            hintText:
-                                'Example: 300mm',
-                            border:
-                                OutlineInputBorder(),
+                            labelText: 'Height',
+                            hintText: 'Example: 300mm',
+                            border: OutlineInputBorder(),
                           ),
                         ),
                       ),
@@ -1082,13 +986,11 @@ class _ModelConfigFormPageState
                   ),
 
                   TextFormField(
-                    controller:
-                        _tagsController,
+                    controller: _tagsController,
                     onChanged: (_) {
                       setState(() {});
                     },
-                    decoration:
-                        InputDecoration(
+                    decoration: InputDecoration(
                       labelText: 'Tags',
                       hintText:
                           'anime, pirate, fantasy',
@@ -1104,9 +1006,7 @@ class _ModelConfigFormPageState
                   ),
 
                   if (!_isLoadingSuggestions &&
-                      _suggestions
-                          .tags
-                          .isNotEmpty) ...[
+                      _suggestions.tags.isNotEmpty) ...[
                     const SizedBox(
                       height: 8,
                     ),
@@ -1118,18 +1018,14 @@ class _ModelConfigFormPageState
                   ),
 
                   TextFormField(
-                    controller:
-                        _descriptionController,
+                    controller: _descriptionController,
                     minLines: 4,
                     maxLines: 8,
                     decoration:
                         const InputDecoration(
-                      labelText:
-                          'Description',
-                      alignLabelWithHint:
-                          true,
-                      border:
-                          OutlineInputBorder(),
+                      labelText: 'Description',
+                      alignLabelWithHint: true,
+                      border: OutlineInputBorder(),
                     ),
                   ),
 
@@ -1139,22 +1035,18 @@ class _ModelConfigFormPageState
 
                   FilledButton.icon(
                     onPressed:
-                        _isSaving
-                            ? null
-                            : _save,
+                        _isSaving ? null : _save,
                     icon: _isSaving
                         ? const SizedBox(
                             width: 18,
                             height: 18,
                             child:
                                 CircularProgressIndicator(
-                              strokeWidth:
-                                  2,
+                              strokeWidth: 2,
                             ),
                           )
                         : const Icon(
-                            Icons
-                                .save_outlined,
+                            Icons.save_outlined,
                           ),
                     label: Text(
                       _isSaving
@@ -1174,26 +1066,26 @@ class _ModelConfigFormPageState
   }
 
   Widget _buildTagSuggestions() {
-    final query =
-        _getCurrentTagQuery(
+    final query = _getCurrentTagQuery(
       _tagsController.text,
     );
 
-    final existingTags =
-        _getExistingTags(
+    final existingTags = _getExistingTags(
       _tagsController.text,
     );
 
-    final suggestions =
-        _filterOptions(
+    final suggestions = _filterOptions(
       _suggestions.tags,
       query,
-    ).where(
-      (tag) =>
-          !existingTags.contains(
-        tag.toLowerCase(),
-      ),
-    ).take(12).toList();
+    )
+        .where(
+          (tag) =>
+              !existingTags.contains(
+            tag.toLowerCase(),
+          ),
+        )
+        .take(12)
+        .toList();
 
     if (suggestions.isEmpty) {
       return const SizedBox.shrink();
@@ -1206,8 +1098,7 @@ class _ModelConfigFormPageState
         (tag) {
           return ActionChip(
             label: Text(tag),
-            onPressed: () =>
-                _selectTag(tag),
+            onPressed: () => _selectTag(tag),
           );
         },
       ).toList(),
