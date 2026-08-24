@@ -23,6 +23,10 @@ class _CatalogPageState
   final CatalogScanner _scanner =
       CatalogScanner();
 
+  final TextEditingController
+      _searchController =
+      TextEditingController();
+
   bool _isLoading = true;
 
   String? _error;
@@ -31,11 +35,35 @@ class _CatalogPageState
 
   String? _selectedStudio;
 
+  String _searchQuery = '';
+
   @override
   void initState() {
     super.initState();
 
+    _searchController.addListener(
+      _onSearchChanged,
+    );
+
     _loadCatalog();
+  }
+
+  @override
+  void dispose() {
+    _searchController.removeListener(
+      _onSearchChanged,
+    );
+
+    _searchController.dispose();
+
+    super.dispose();
+  }
+
+  void _onSearchChanged() {
+    setState(() {
+      _searchQuery =
+          _searchController.text.trim();
+    });
   }
 
   Future<void> _loadCatalog() async {
@@ -94,6 +122,117 @@ class _CatalogPageState
     await _loadCatalog();
   }
 
+  void _clearSearch() {
+    _searchController.clear();
+  }
+
+  List<_SearchResult>
+      _getSearchResults() {
+    final query =
+        _normalizeText(_searchQuery);
+
+    if (query.isEmpty) {
+      return [];
+    }
+
+    final results =
+        <_SearchResult>[];
+
+    for (final studio in _studios) {
+      for (final model in studio.models) {
+        if (_matchesSearch(
+          model,
+          studio.name,
+          query,
+        )) {
+          results.add(
+            _SearchResult(
+              model: model,
+              studioName: studio.name,
+            ),
+          );
+        }
+      }
+    }
+
+    results.sort(
+      (a, b) => a.model.name
+          .toLowerCase()
+          .compareTo(
+            b.model.name.toLowerCase(),
+          ),
+    );
+
+    return results;
+  }
+
+  bool _matchesSearch(
+    CatalogModel model,
+    String studioName,
+    String query,
+  ) {
+    final searchableText = [
+      model.name,
+      model.studio,
+      studioName,
+      model.category,
+      model.type,
+      model.scale,
+      model.height,
+      model.description,
+      ...model.tags,
+    ].join(' ');
+
+    return _normalizeText(
+      searchableText,
+    ).contains(query);
+  }
+
+  String _normalizeText(
+    String value,
+  ) {
+    const accents = {
+      'á': 'a',
+      'à': 'a',
+      'ã': 'a',
+      'â': 'a',
+      'ä': 'a',
+      'é': 'e',
+      'è': 'e',
+      'ê': 'e',
+      'ë': 'e',
+      'í': 'i',
+      'ì': 'i',
+      'î': 'i',
+      'ï': 'i',
+      'ó': 'o',
+      'ò': 'o',
+      'õ': 'o',
+      'ô': 'o',
+      'ö': 'o',
+      'ú': 'u',
+      'ù': 'u',
+      'û': 'u',
+      'ü': 'u',
+      'ç': 'c',
+      'ñ': 'n',
+    };
+
+    var result =
+        value.toLowerCase().trim();
+
+    accents.forEach(
+      (accent, replacement) {
+        result = result.replaceAll(
+          accent,
+          replacement,
+        );
+      },
+    );
+
+    return result;
+  }
+
   @override
   Widget build(
     BuildContext context,
@@ -147,10 +286,56 @@ class _CatalogPageState
       children: [
         _buildStudioList(),
         Expanded(
-          child:
-              _buildStudioContent(),
+          child: Column(
+            children: [
+              _buildSearchBar(),
+              Expanded(
+                child:
+                    _searchQuery.isNotEmpty
+                        ? _buildSearchContent()
+                        : _buildStudioContent(),
+              ),
+            ],
+          ),
         ),
       ],
+    );
+  }
+
+  Widget _buildSearchBar() {
+    final hasSearch =
+        _searchQuery.isNotEmpty;
+
+    return Padding(
+      padding:
+          const EdgeInsets.fromLTRB(
+        24,
+        20,
+        24,
+        8,
+      ),
+      child: TextField(
+        controller: _searchController,
+        decoration: InputDecoration(
+          hintText:
+              'Search models, studios, categories or tags...',
+          prefixIcon: const Icon(
+            Icons.search,
+          ),
+          suffixIcon: hasSearch
+              ? IconButton(
+                  tooltip: 'Clear Search',
+                  icon: const Icon(
+                    Icons.clear,
+                  ),
+                  onPressed:
+                      _clearSearch,
+                )
+              : null,
+          border:
+              const OutlineInputBorder(),
+        ),
+      ),
     );
   }
 
@@ -227,6 +412,114 @@ class _CatalogPageState
     );
   }
 
+  Widget _buildSearchContent() {
+    final results =
+        _getSearchResults();
+
+    if (results.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize:
+              MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.search_off_outlined,
+              size: 72,
+            ),
+            const SizedBox(
+              height: 16,
+            ),
+            Text(
+              'No models found for "$_searchQuery".',
+              textAlign:
+                  TextAlign.center,
+            ),
+            const SizedBox(
+              height: 16,
+            ),
+            OutlinedButton.icon(
+              onPressed:
+                  _clearSearch,
+              icon: const Icon(
+                Icons.clear,
+              ),
+              label: const Text(
+                'Clear Search',
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment:
+          CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding:
+              const EdgeInsets.fromLTRB(
+            24,
+            16,
+            24,
+            8,
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Search Results',
+                  style: Theme.of(context)
+                      .textTheme
+                      .headlineSmall
+                      ?.copyWith(
+                        fontWeight:
+                            FontWeight.bold,
+                      ),
+                ),
+              ),
+              Text(
+                '${results.length} models',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium,
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: GridView.builder(
+            padding:
+                const EdgeInsets.all(24),
+            gridDelegate:
+                const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 300,
+              childAspectRatio: 0.72,
+              crossAxisSpacing: 20,
+              mainAxisSpacing: 20,
+            ),
+            itemCount:
+                results.length,
+            itemBuilder:
+                (context, index) {
+              final result =
+                  results[index];
+
+              return ModelCard(
+                model: result.model,
+                studioName:
+                    result.studioName,
+                fabulariumPath:
+                    widget.fabulariumPath,
+                showStudio: true,
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildStudioContent() {
     if (_selectedStudio == null) {
       return const Center(
@@ -241,7 +534,7 @@ class _CatalogPageState
             ),
             SizedBox(height: 16),
             Text(
-              'Select a studio',
+              'Select a studio or search for a model',
             ),
           ],
         ),
@@ -407,6 +700,17 @@ class _CatalogPageState
   }
 }
 
+class _SearchResult {
+  final CatalogModel model;
+
+  final String studioName;
+
+  const _SearchResult({
+    required this.model,
+    required this.studioName,
+  });
+}
+
 class ModelCard extends StatelessWidget {
   final CatalogModel model;
 
@@ -414,11 +718,14 @@ class ModelCard extends StatelessWidget {
 
   final String fabulariumPath;
 
+  final bool showStudio;
+
   const ModelCard({
     super.key,
     required this.model,
     required this.studioName,
     required this.fabulariumPath,
+    this.showStudio = false,
   });
 
   @override
@@ -476,8 +783,7 @@ class ModelCard extends StatelessWidget {
                     )
                   : const Center(
                       child: Icon(
-                        Icons
-                            .image_outlined,
+                        Icons.image_outlined,
                         size: 48,
                       ),
                     ),
@@ -494,8 +800,8 @@ class ModelCard extends StatelessWidget {
                   Text(
                     model.name,
                     maxLines: 2,
-                    overflow: TextOverflow
-                        .ellipsis,
+                    overflow:
+                        TextOverflow.ellipsis,
                     style:
                         const TextStyle(
                       fontWeight:
@@ -503,6 +809,42 @@ class ModelCard extends StatelessWidget {
                       fontSize: 16,
                     ),
                   ),
+                  if (showStudio) ...[
+                    const SizedBox(
+                      height: 4,
+                    ),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons
+                              .business_outlined,
+                          size: 14,
+                          color: Theme.of(
+                            context,
+                          )
+                              .colorScheme
+                              .primary,
+                        ),
+                        const SizedBox(
+                          width: 4,
+                        ),
+                        Expanded(
+                          child: Text(
+                            studioName,
+                            maxLines: 1,
+                            overflow:
+                                TextOverflow
+                                    .ellipsis,
+                            style: Theme.of(
+                              context,
+                            )
+                                .textTheme
+                                .bodySmall,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                   const SizedBox(
                     height: 6,
                   ),
@@ -512,8 +854,7 @@ class ModelCard extends StatelessWidget {
                       model.category,
                       maxLines: 1,
                       overflow:
-                          TextOverflow
-                              .ellipsis,
+                          TextOverflow.ellipsis,
                     ),
                   if (model.type
                       .isNotEmpty) ...[
@@ -551,8 +892,7 @@ class ModelCard extends StatelessWidget {
                         width: 12,
                       ),
                       const Icon(
-                        Icons
-                            .archive_outlined,
+                        Icons.archive_outlined,
                         size: 16,
                       ),
                       const SizedBox(
