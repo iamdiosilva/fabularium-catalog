@@ -62,7 +62,10 @@ class DownloadQueuePage
           context,
           child,
         ) {
-          if (queue.tasks.isEmpty) {
+          final tasks =
+              queue.tasks;
+
+          if (tasks.isEmpty) {
             return const Center(
               child:
                   Column(
@@ -102,7 +105,7 @@ class DownloadQueuePage
                     20,
                   ),
                   itemCount:
-                      queue.tasks.length,
+                      tasks.length,
                   separatorBuilder:
                       (
                     context,
@@ -118,14 +121,29 @@ class DownloadQueuePage
                     index,
                   ) {
                     final task =
-                        queue.tasks[
+                        tasks[
                             index];
 
-                    return _DownloadTaskCard(
-                      task:
-                          task,
-                      queue:
-                          queue,
+                    return ValueListenableBuilder<int>(
+                      valueListenable:
+                          queue
+                              .listenableForMedia(
+                        task.media,
+                        task.groupTitle,
+                      ),
+                      builder:
+                          (
+                        context,
+                        revision,
+                        child,
+                      ) {
+                        return _DownloadTaskCard(
+                          task:
+                              task,
+                          queue:
+                              queue,
+                        );
+                      },
                     );
                   },
                 ),
@@ -150,104 +168,115 @@ class _DownloadSummary
   Widget build(
     BuildContext context,
   ) {
-    final current =
-        queue.currentTask;
+    return ValueListenableBuilder<int>(
+      valueListenable:
+          queue.progressListenable,
+      builder:
+          (
+        context,
+        revision,
+        child,
+      ) {
+        final current =
+            queue.currentTask;
 
-    return Container(
-      width:
-          double.infinity,
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal:
-            24,
-        vertical:
-            16,
-      ),
-      decoration:
-          BoxDecoration(
-        border:
-            Border(
-          bottom:
-              BorderSide(
-            color:
-                Theme.of(context)
-                    .dividerColor,
+        return Container(
+          width:
+              double.infinity,
+          padding:
+              const EdgeInsets.symmetric(
+            horizontal:
+                24,
+            vertical:
+                16,
           ),
-        ),
-      ),
-      child:
-          Wrap(
-        spacing:
-            24,
-        runSpacing:
-            10,
-        crossAxisAlignment:
-            WrapCrossAlignment.center,
-        children: [
-          _SummaryItem(
-            icon:
-                Icons.downloading,
-            label:
-                'Active',
-            value:
-                queue.activeCount,
-          ),
-
-          _SummaryItem(
-            icon:
-                Icons.schedule,
-            label:
-                'Queued',
-            value:
-                queue.queuedCount,
-          ),
-
-          _SummaryItem(
-            icon:
-                Icons
-                    .check_circle_outline,
-            label:
-                'Completed',
-            value:
-                queue.completedCount,
-          ),
-
-          if (queue.failedCount >
-              0)
-            _SummaryItem(
-              icon:
-                  Icons.error_outline,
-              label:
-                  'Failed',
-              value:
-                  queue.failedCount,
+          decoration:
+              BoxDecoration(
+            border:
+                Border(
+              bottom:
+                  BorderSide(
+                color:
+                    Theme.of(context)
+                        .dividerColor,
+              ),
             ),
+          ),
+          child:
+              Wrap(
+            spacing:
+                24,
+            runSpacing:
+                10,
+            crossAxisAlignment:
+                WrapCrossAlignment.center,
+            children: [
+              _SummaryItem(
+                icon:
+                    Icons.downloading,
+                label:
+                    'Active',
+                value:
+                    queue.activeCount,
+              ),
 
-          if (current != null &&
-              current.bytesPerSecond >
+              _SummaryItem(
+                icon:
+                    Icons.schedule,
+                label:
+                    'Queued',
+                value:
+                    queue.queuedCount,
+              ),
+
+              _SummaryItem(
+                icon:
+                    Icons
+                        .check_circle_outline,
+                label:
+                    'Completed',
+                value:
+                    queue.completedCount,
+              ),
+
+              if (queue.failedCount >
                   0)
-            Row(
-              mainAxisSize:
-                  MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.speed,
-                  size:
-                      18,
+                _SummaryItem(
+                  icon:
+                      Icons.error_outline,
+                  label:
+                      'Failed',
+                  value:
+                      queue.failedCount,
                 ),
 
-                const SizedBox(
-                  width:
-                      6,
-                ),
+              if (current != null &&
+                  current.bytesPerSecond >
+                      0)
+                Row(
+                  mainAxisSize:
+                      MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.speed,
+                      size:
+                          18,
+                    ),
 
-                Text(
-                  '${_formatSize(current.bytesPerSecond.round())}/s',
+                    const SizedBox(
+                      width:
+                          6,
+                    ),
+
+                    Text(
+                      '${_formatSize(current.bytesPerSecond.round())}/s',
+                    ),
+                  ],
                 ),
-              ],
-            ),
-        ],
-      ),
+            ],
+          ),
+        );
+      },
     );
   }
 

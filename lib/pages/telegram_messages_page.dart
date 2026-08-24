@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/download_task.dart';
@@ -414,6 +415,9 @@ class _TelegramMediaCardState
   final DownloadQueueService _queue =
       DownloadQueueService.instance;
 
+  late final ValueListenable<int>
+      _downloadListenable;
+
   String? _previewPath;
 
   String? _previewError;
@@ -421,9 +425,32 @@ class _TelegramMediaCardState
   bool _isLoadingPreview =
       false;
 
+  String? _existingPath;
+
   @override
   void initState() {
     super.initState();
+
+    _downloadListenable =
+        _queue.listenableForMedia(
+      widget.media,
+      widget.groupTitle,
+    );
+
+    /*
+     * Consulta apenas UMA vez.
+     *
+     * Antes existsSync()/lengthSync()
+     * acabavam sendo executados a cada
+     * atualização de progresso.
+     */
+    _existingPath =
+        _telegram
+            .getDownloadedMediaPath(
+      widget.media,
+      groupTitle:
+          widget.groupTitle,
+    );
 
     if (widget.media.hasPreview) {
       _loadPreview();
@@ -490,12 +517,13 @@ class _TelegramMediaCardState
   Widget build(
     BuildContext context,
   ) {
-    return AnimatedBuilder(
-      animation:
-          _queue,
+    return ValueListenableBuilder<int>(
+      valueListenable:
+          _downloadListenable,
       builder:
           (
         context,
+        revision,
         child,
       ) {
         final task =
@@ -506,12 +534,7 @@ class _TelegramMediaCardState
 
         final existingPath =
             task?.filePath ??
-                _telegram
-                    .getDownloadedMediaPath(
-          widget.media,
-          groupTitle:
-              widget.groupTitle,
-        );
+                _existingPath;
 
         return Container(
           width:
@@ -656,25 +679,25 @@ class _TelegramMediaCardState
     DownloadTask task,
   ) {
     if (task.isQueued) {
-      return Padding(
+      return const Padding(
         padding:
-            const EdgeInsets.only(
+            EdgeInsets.only(
           top:
               14,
         ),
         child:
             Row(
           children: [
-            const Icon(
+            Icon(
               Icons.schedule,
               size:
                   18,
             ),
-            const SizedBox(
+            SizedBox(
               width:
                   8,
             ),
-            const Text(
+            Text(
               'Waiting in download queue',
             ),
           ],
@@ -904,11 +927,6 @@ class _TelegramMediaCardState
 
     if (_previewPath !=
         null) {
-      final file =
-          File(
-        _previewPath!,
-      );
-
       return ClipRRect(
         borderRadius:
             BorderRadius.circular(
@@ -923,11 +941,17 @@ class _TelegramMediaCardState
           ),
           child:
               Image.file(
-            file,
+            File(
+              _previewPath!,
+            ),
             width:
                 double.infinity,
             fit:
                 BoxFit.contain,
+            gaplessPlayback:
+                true,
+            filterQuality:
+                FilterQuality.low,
             errorBuilder:
                 (
               context,
@@ -1006,7 +1030,8 @@ class _TelegramMediaCardState
   String _formatSize(
     int bytes,
   ) {
-    if (bytes <= 0) {
+    if (bytes <=
+        0) {
       return 'Unknown size';
     }
 
@@ -1019,15 +1044,18 @@ class _TelegramMediaCardState
     const gb =
         mb * 1024;
 
-    if (bytes >= gb) {
+    if (bytes >=
+        gb) {
       return '${(bytes / gb).toStringAsFixed(2)} GB';
     }
 
-    if (bytes >= mb) {
+    if (bytes >=
+        mb) {
       return '${(bytes / mb).toStringAsFixed(2)} MB';
     }
 
-    if (bytes >= kb) {
+    if (bytes >=
+        kb) {
       return '${(bytes / kb).toStringAsFixed(1)} KB';
     }
 

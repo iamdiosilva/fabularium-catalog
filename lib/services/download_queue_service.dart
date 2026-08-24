@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/download_task.dart';
 import '../models/telegram_media.dart';
-import 'telegram_download_engine.dart';
+import 'telegram_download_worker.dart';
 import 'telegram_service.dart';
 
 class DownloadQueueService
@@ -18,33 +18,50 @@ class DownloadQueueService
   final TelegramService _telegram =
       TelegramService.instance;
 
-  final TelegramDownloadEngine
-      _downloadEngine =
-      TelegramDownloadEngine.instance;
+  final TelegramDownloadWorker
+      _downloadWorker =
+      TelegramDownloadWorker.instance;
 
   final List<DownloadTask> _tasks =
       [];
 
+  final Map<String, DownloadTask>
+      _tasksById =
+      {};
+
+  /*
+   * Cada arquivo possui seu próprio
+   * revision notifier.
+   *
+   * Um download não precisa mais
+   * reconstruir todos os TelegramMediaCards.
+   */
+  final Map<String, ValueNotifier<int>>
+      _taskRevisions =
+      {};
+
+  /*
+   * Overlay global utiliza apenas
+   * esse notifier.
+   */
+  final ValueNotifier<int>
+      _progressRevision =
+      ValueNotifier<int>(
+    0,
+  );
+
+  ValueListenable<int>
+      get progressListenable =>
+          _progressRevision;
+
   bool _processing =
       false;
 
-  /*
-   * ============================================================
-   * UI THROTTLING
-   * ============================================================
-   *
-   * O downloader pode receber dezenas ou até
-   * centenas de eventos de progresso por segundo.
-   *
-   * Não precisamos reconstruir a UI em cada um.
-   *
-   * Mantemos os valores internos atualizados em
-   * tempo real, mas notificamos o Flutter no
-   * máximo aproximadamente 6~7 vezes por segundo.
-   */
-  static const Duration _uiUpdateInterval =
+  static const Duration
+      _uiUpdateInterval =
       Duration(
-    milliseconds: 150,
+    milliseconds:
+        150,
   );
 
   Timer? _progressUiTimer;
@@ -53,6 +70,10 @@ class DownloadQueueService
       DateTime.fromMillisecondsSinceEpoch(
     0,
   );
+
+  final Set<String>
+      _pendingTaskNotifications =
+      {};
 
   List<DownloadTask> get tasks =>
       List.unmodifiable(
@@ -85,7 +106,8 @@ class DownloadQueueService
           .toList();
 
   DownloadTask? get currentTask {
-    for (final task in _tasks) {
+    for (final task
+        in _tasks) {
       if (task.isDownloading) {
         return task;
       }
@@ -94,28 +116,69 @@ class DownloadQueueService
     return null;
   }
 
-  int get activeCount =>
-      activeTasks.length;
+  int get activeCount {
+    int result =
+        0;
 
-  int get queuedCount =>
-      _tasks
-          .where(
-            (task) =>
-                task.isQueued,
-          )
-          .length;
+    for (final task
+        in _tasks) {
+      if (task.isQueued ||
+          task.isDownloading) {
+        result++;
+      }
+    }
 
-  int get completedCount =>
-      completedTasks.length;
+    return result;
+  }
 
-  int get failedCount =>
-      failedTasks.length;
+  int get queuedCount {
+    int result =
+        0;
+
+    for (final task
+        in _tasks) {
+      if (task.isQueued) {
+        result++;
+      }
+    }
+
+    return result;
+  }
+
+  int get completedCount {
+    int result =
+        0;
+
+    for (final task
+        in _tasks) {
+      if (task.isCompleted) {
+        result++;
+      }
+    }
+
+    return result;
+  }
+
+  int get failedCount {
+    int result =
+        0;
+
+    for (final task
+        in _tasks) {
+      if (task.isFailed) {
+        result++;
+      }
+    }
+
+    return result;
+  }
 
   bool get hasTasks =>
       _tasks.isNotEmpty;
 
   bool get hasActiveDownloads =>
-      activeCount > 0;
+      activeCount >
+      0;
 
   String buildTaskId(
     TelegramMedia media,
@@ -130,31 +193,47 @@ class DownloadQueueService
     TelegramMedia media,
     String groupTitle,
   ) {
+    return _tasksById[
+        buildTaskId(
+      media,
+      groupTitle,
+    )];
+  }
+
+  ValueListenable<int>
+      listenableForMedia(
+    TelegramMedia media,
+    String groupTitle,
+  ) {
     final id =
         buildTaskId(
       media,
       groupTitle,
     );
 
-    for (final task in _tasks) {
-      if (task.id ==
-          id) {
-        return task;
-      }
-    }
-
-    return null;
+    return _taskRevisions
+        .putIfAbsent(
+      id,
+      () =>
+          ValueNotifier<int>(
+        0,
+      ),
+    );
   }
 
   DownloadTask enqueue({
     required TelegramMedia media,
     required String groupTitle,
   }) {
-    final existing =
-        taskForMedia(
+    final id =
+        buildTaskId(
       media,
       groupTitle,
     );
+
+    final existing =
+        _tasksById[
+            id];
 
     if (existing != null) {
       if (existing.isFailed) {
@@ -166,6 +245,13 @@ class DownloadQueueService
       return existing;
     }
 
+    /*
+     * Essa consulta síncrona acontece somente
+     * quando o usuário efetivamente adiciona
+     * o download.
+     *
+     * Não acontece mais dentro do build().
+     */
     final downloadedPath =
         _telegram
             .getDownloadedMediaPath(
@@ -177,10 +263,7 @@ class DownloadQueueService
     final task =
         DownloadTask(
       id:
-          buildTaskId(
-        media,
-        groupTitle,
-      ),
+          id,
       media:
           media,
       groupTitle:
@@ -189,8 +272,10 @@ class DownloadQueueService
           DateTime.now(),
       status:
           downloadedPath != null
-              ? DownloadTaskStatus.completed
-              : DownloadTaskStatus.queued,
+              ? DownloadTaskStatus
+                  .completed
+              : DownloadTaskStatus
+                  .queued,
       receivedBytes:
           downloadedPath != null
               ? media.size
@@ -206,7 +291,13 @@ class DownloadQueueService
       task,
     );
 
-    _notifyImmediately();
+    _tasksById[
+            id] =
+        task;
+
+    _notifyImmediately(
+      task,
+    );
 
     if (task.isQueued) {
       _startProcessing();
@@ -249,7 +340,9 @@ class DownloadQueueService
     task.estimatedRemaining =
         null;
 
-    _notifyImmediately();
+    _notifyImmediately(
+      task,
+    );
 
     _startProcessing();
   }
@@ -265,25 +358,69 @@ class DownloadQueueService
       task,
     );
 
-    _notifyImmediately();
+    _tasksById.remove(
+      task.id,
+    );
+
+    _notifyImmediately(
+      task,
+    );
   }
 
   void clearCompleted() {
+    final removed =
+        _tasks
+            .where(
+              (task) =>
+                  task.isCompleted,
+            )
+            .toList();
+
     _tasks.removeWhere(
       (task) =>
           task.isCompleted,
     );
 
-    _notifyImmediately();
+    for (final task
+        in removed) {
+      _tasksById.remove(
+        task.id,
+      );
+
+      _touchTask(
+        task.id,
+      );
+    }
+
+    _notifyStructure();
   }
 
   void clearFinished() {
+    final removed =
+        _tasks
+            .where(
+              (task) =>
+                  task.isFinished,
+            )
+            .toList();
+
     _tasks.removeWhere(
       (task) =>
           task.isFinished,
     );
 
-    _notifyImmediately();
+    for (final task
+        in removed) {
+      _tasksById.remove(
+        task.id,
+      );
+
+      _touchTask(
+        task.id,
+      );
+    }
+
+    _notifyStructure();
   }
 
   Future<void> showInFolder(
@@ -324,7 +461,7 @@ class DownloadQueueService
             nextTask;
 
         /*
-         * Mantemos FIFO.
+         * FIFO.
          */
         for (final task
             in _tasks.reversed) {
@@ -349,7 +486,7 @@ class DownloadQueueService
       _processing =
           false;
 
-      _notifyImmediately();
+      _notifyStructure();
     }
   }
 
@@ -380,11 +517,9 @@ class DownloadQueueService
     task.estimatedRemaining =
         null;
 
-    /*
-     * Mudança de status deve aparecer
-     * imediatamente.
-     */
-    _notifyImmediately();
+    _notifyImmediately(
+      task,
+    );
 
     DateTime lastSampleTime =
         DateTime.now();
@@ -393,8 +528,14 @@ class DownloadQueueService
         0;
 
     try {
+      /*
+       * IMPORTANTE:
+       *
+       * Agora todo o TelegramDownloadEngine
+       * roda dentro de outro isolate.
+       */
       final path =
-          await _downloadEngine
+          await _downloadWorker
               .downloadMedia(
         task.media,
         groupTitle:
@@ -404,17 +545,11 @@ class DownloadQueueService
           received,
           total,
         ) {
-          /*
-           * Esses valores continuam sendo
-           * atualizados para cada chunk.
-           *
-           * Só não reconstruímos a UI
-           * imediatamente.
-           */
           task.receivedBytes =
               received;
 
-          if (total > 0) {
+          if (total >
+              0) {
             task.totalBytes =
                 total;
           }
@@ -429,10 +564,6 @@ class DownloadQueueService
                   )
                   .inMilliseconds;
 
-          /*
-           * Velocidade e ETA precisam de
-           * atualização ainda mais lenta.
-           */
           if (elapsedMilliseconds >=
                   400 ||
               (total > 0 &&
@@ -446,15 +577,14 @@ class DownloadQueueService
                 elapsedMilliseconds /
                     1000.0;
 
-            if (seconds > 0 &&
-                deltaBytes >= 0) {
+            if (seconds >
+                    0 &&
+                deltaBytes >=
+                    0) {
               final instantSpeed =
                   deltaBytes /
                       seconds;
 
-              /*
-               * Média suavizada.
-               */
               if (task.bytesPerSecond <=
                   0) {
                 task.bytesPerSecond =
@@ -467,10 +597,8 @@ class DownloadQueueService
                             0.35);
               }
 
-              /*
-               * ETA.
-               */
-              if (task.totalBytes > 0 &&
+              if (task.totalBytes >
+                      0 &&
                   task.bytesPerSecond >
                       0) {
                 final remainingBytes =
@@ -504,19 +632,9 @@ class DownloadQueueService
                 now;
           }
 
-          /*
-           * IMPORTANTE:
-           *
-           * Antes:
-           *
-           * notifyListeners();
-           *
-           * Agora:
-           *
-           * agenda uma atualização visual
-           * controlada.
-           */
-          _scheduleProgressNotification();
+          _scheduleProgressNotification(
+            task,
+          );
         },
       );
 
@@ -554,17 +672,22 @@ class DownloadQueueService
           null;
     }
 
-    /*
-     * Conclusão ou erro aparece imediatamente.
-     */
-    _notifyImmediately();
+    _notifyImmediately(
+      task,
+    );
   }
 
   // ============================================================
-  // UI NOTIFICATION
+  // NOTIFIERS
   // ============================================================
 
-  void _scheduleProgressNotification() {
+  void _scheduleProgressNotification(
+    DownloadTask task,
+  ) {
+    _pendingTaskNotifications.add(
+      task.id,
+    );
+
     final now =
         DateTime.now();
 
@@ -573,23 +696,13 @@ class DownloadQueueService
       _lastUiNotification,
     );
 
-    /*
-     * Já passou o intervalo mínimo.
-     *
-     * Podemos atualizar imediatamente.
-     */
     if (elapsed >=
         _uiUpdateInterval) {
-      _notifyImmediately();
+      _flushProgressNotifications();
 
       return;
     }
 
-    /*
-     * Já existe uma atualização agendada.
-     *
-     * Não criamos outro Timer.
-     */
     if (_progressUiTimer !=
         null) {
       return;
@@ -602,23 +715,11 @@ class DownloadQueueService
     _progressUiTimer =
         Timer(
       remaining,
-      () {
-        _progressUiTimer =
-            null;
-
-        _lastUiNotification =
-            DateTime.now();
-
-        notifyListeners();
-      },
+      _flushProgressNotifications,
     );
   }
 
-  void _notifyImmediately() {
-    /*
-     * Cancela atualização atrasada,
-     * pois vamos atualizar agora.
-     */
+  void _flushProgressNotifications() {
     _progressUiTimer?.cancel();
 
     _progressUiTimer =
@@ -627,15 +728,91 @@ class DownloadQueueService
     _lastUiNotification =
         DateTime.now();
 
+    for (final id
+        in _pendingTaskNotifications) {
+      _touchTask(
+        id,
+      );
+    }
+
+    _pendingTaskNotifications.clear();
+
+    /*
+     * Somente overlay/resumo escutam isso.
+     *
+     * Não dispara rebuild global
+     * da página de mensagens.
+     */
+    _progressRevision.value++;
+  }
+
+  void _notifyImmediately(
+    DownloadTask task,
+  ) {
+    _progressUiTimer?.cancel();
+
+    _progressUiTimer =
+        null;
+
+    _pendingTaskNotifications.remove(
+      task.id,
+    );
+
+    _lastUiNotification =
+        DateTime.now();
+
+    _touchTask(
+      task.id,
+    );
+
+    _progressRevision.value++;
+
+    /*
+     * ChangeNotifier global agora é usado
+     * para mudanças estruturais:
+     *
+     * queued
+     * downloading
+     * completed
+     * failed
+     * add/remove
+     */
     notifyListeners();
+  }
+
+  void _notifyStructure() {
+    _progressRevision.value++;
+
+    notifyListeners();
+  }
+
+  void _touchTask(
+    String id,
+  ) {
+    final notifier =
+        _taskRevisions[
+            id];
+
+    if (notifier ==
+        null) {
+      return;
+    }
+
+    notifier.value++;
   }
 
   @override
   void dispose() {
     _progressUiTimer?.cancel();
 
-    _progressUiTimer =
-        null;
+    for (final notifier
+        in _taskRevisions.values) {
+      notifier.dispose();
+    }
+
+    _taskRevisions.clear();
+
+    _progressRevision.dispose();
 
     super.dispose();
   }

@@ -19,12 +19,13 @@ class DownloadQueueOverlay
     final queue =
         DownloadQueueService.instance;
 
-    return AnimatedBuilder(
-      animation:
-          queue,
+    return ValueListenableBuilder<int>(
+      valueListenable:
+          queue.progressListenable,
       builder:
           (
         context,
+        revision,
         child,
       ) {
         if (!queue.hasTasks) {
