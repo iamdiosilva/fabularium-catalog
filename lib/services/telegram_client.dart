@@ -46,31 +46,20 @@ class TelegramClient {
 
   final Map<String, tg.Client>
       _downloadClients = {};
+
   final Map<String, TelegramSocket>
       _downloadSockets = {};
+
   final Map<String, Future<tg.Client>>
       _downloadClientFutures = {};
 
   tg.Client? get client =>
       _client;
 
-  int get currentDcId =>
-      _dc.id;
-
-  /*
-   * Mantido somente por compatibilidade.
-   *
-   * O aplicativo não possui mais consumidor
-   * dos antigos logs MTProto.
-   */
-  Stream<Object> get logs =>
-      const Stream<Object>.empty();
-
   bool get hasSavedSession {
     try {
       return _resolveSessionFile(
-        migrateLegacy:
-            true,
+        migrateLegacy: true,
       ).existsSync();
     } catch (_) {
       return false;
@@ -80,9 +69,6 @@ class TelegramClient {
   // ============================================================
   // SESSION PATH
   // ============================================================
-
-  String get sessionFilePath =>
-      _sessionFilePath();
 
   String _sessionFilePath() {
     final localAppData =
@@ -137,8 +123,7 @@ class TelegramClient {
 
     try {
       target.parent.createSync(
-        recursive:
-            true,
+        recursive: true,
       );
 
       if (!target.existsSync()) {
@@ -246,8 +231,7 @@ class TelegramClient {
       _dc.port,
       timeout:
           const Duration(
-        seconds:
-            15,
+        seconds: 15,
       ),
     );
 
@@ -312,8 +296,7 @@ class TelegramClient {
 
       final configResponse =
           await client
-              .initConnection<
-                  t.Config>(
+              .initConnection<t.Config>(
         apiId:
             TelegramConfig.apiId,
         deviceModel:
@@ -489,8 +472,7 @@ class TelegramClient {
       final exportResponse =
           await mainClient.auth
               .exportAuthorization(
-        dcId:
-            dcId,
+        dcId: dcId,
       );
 
       if (exportResponse.error !=
@@ -514,6 +496,7 @@ class TelegramClient {
       }
 
       late final int exportedId;
+
       late final Uint8List
           exportedBytes;
 
@@ -548,8 +531,7 @@ class TelegramClient {
       try {
         final connection =
             await _openImportedAuthorizationConnection(
-          dc:
-              dc,
+          dc: dc,
           exportedId:
               exportedId,
           exportedBytes:
@@ -633,10 +615,8 @@ class TelegramClient {
 
     final future =
         _createDownloadSession(
-      dcId:
-          dcId,
-      slot:
-          slot,
+      dcId: dcId,
+      slot: slot,
     );
 
     _downloadClientFutures[key] =
@@ -708,8 +688,7 @@ class TelegramClient {
 
     final connection =
         await _openConnectionWithAuthorizationKey(
-      dc:
-          dc,
+      dc: dc,
       authorizationKey:
           clonedAuthorizationKey,
     );
@@ -739,8 +718,7 @@ class TelegramClient {
       dc.port,
       timeout:
           const Duration(
-        seconds:
-            15,
+        seconds: 15,
       ),
     );
 
@@ -794,9 +772,8 @@ class TelegramClient {
        * AUTH_BYTES_INVALID em alguns DCs.
        */
       final importResponse =
-          await client
-              .initConnection<
-                  t.AuthAuthorizationBase>(
+          await client.initConnection<
+              t.AuthAuthorizationBase>(
         apiId:
             TelegramConfig.apiId,
         deviceModel:
@@ -868,8 +845,7 @@ class TelegramClient {
       dc.port,
       timeout:
           const Duration(
-        seconds:
-            15,
+        seconds: 15,
       ),
     );
 
@@ -955,8 +931,7 @@ class TelegramClient {
   ) async {
     final response =
         await client
-            .initConnection<
-                t.Config>(
+            .initConnection<t.Config>(
       apiId:
           TelegramConfig.apiId,
       deviceModel:
@@ -1078,8 +1053,7 @@ class TelegramClient {
     );
 
     await file.parent.create(
-      recursive:
-          true,
+      recursive: true,
     );
 
     /*
@@ -1137,8 +1111,7 @@ class TelegramClient {
     try {
       final file =
           _resolveSessionFile(
-        migrateLegacy:
-            true,
+        migrateLegacy: true,
       );
 
       if (!file.existsSync()) {
@@ -1251,8 +1224,7 @@ class TelegramClient {
     t.DcOption dc,
   ) async {
     await _disconnectInternal(
-      closeMain:
-          true,
+      closeMain: true,
     );
 
     _dc =
@@ -1383,8 +1355,7 @@ class TelegramClient {
 
     future =
         _disconnectInternal(
-      closeMain:
-          true,
+      closeMain: true,
     ).whenComplete(
       () {
         if (identical(
