@@ -12,37 +12,68 @@ typedef TelegramDownloadSessionInvalidHandler =
 
 class TelegramDownloadWorker {
   TelegramDownloadWorker._() {
-    _downloadWorker =
-        _PersistentTelegramWorker(
-      mode:
-          _TelegramWorkerMode.download,
-      onSessionInvalid:
-          _handleWorkerSessionInvalid,
+    _downloadWorker = _PersistentTelegramWorker(
+      mode: _TelegramWorkerMode.download,
+      onSessionInvalid: _handleWorkerSessionInvalid,
     );
 
-    _previewWorker =
-        _PersistentTelegramWorker(
-      mode:
-          _TelegramWorkerMode.preview,
-      onSessionInvalid:
-          _handleWorkerSessionInvalid,
+    _previewWorker = _PersistentTelegramWorker(
+      mode: _TelegramWorkerMode.preview,
+      onSessionInvalid: _handleWorkerSessionInvalid,
     );
   }
 
   static final TelegramDownloadWorker instance =
       TelegramDownloadWorker._();
 
-  late final _PersistentTelegramWorker
-      _downloadWorker;
+  late final _PersistentTelegramWorker _downloadWorker;
 
-  late final _PersistentTelegramWorker
-      _previewWorker;
+  late final _PersistentTelegramWorker _previewWorker;
 
   TelegramDownloadSessionInvalidHandler?
       _sessionInvalidHandler;
 
-  bool _sessionInvalidNotified =
-      false;
+  bool _sessionInvalidNotified = false;
+
+  bool _sessionResetting = false;
+
+  /*
+   * Tempo máximo para o download começar a
+   * realmente produzir eventos de progresso.
+   *
+   * A primeira conexão pode precisar abrir
+   * sockets, autorizar DCs e aquecer o pool,
+   * então damos uma margem maior.
+   */
+  static const Duration _downloadStartTimeout =
+      Duration(
+    seconds: 90,
+  );
+
+  /*
+   * Depois que o download começou, 60 segundos
+   * sem qualquer evento de progresso é tratado
+   * como conexão travada.
+   */
+  static const Duration _downloadInactivityTimeout =
+      Duration(
+    seconds: 60,
+  );
+
+  /*
+   * Pequena pausa depois de matar o isolate para
+   * permitir que o Windows libere os sockets antes
+   * de criarmos um novo pool.
+   */
+  static const Duration _recoveryDelay =
+      Duration(
+    milliseconds: 500,
+  );
+
+  /*
+   * Tentativa original + duas recuperações.
+   */
+  static const int _maxAutomaticRecoveries = 2;
 
   // ============================================================
   // SESSION INVALID HANDLER
@@ -51,8 +82,7 @@ class TelegramDownloadWorker {
   void setSessionInvalidHandler(
     TelegramDownloadSessionInvalidHandler? handler,
   ) {
-    _sessionInvalidHandler =
-        handler;
+    _sessionInvalidHandler = handler;
   }
 
   void _handleWorkerSessionInvalid(
@@ -70,11 +100,9 @@ class TelegramDownloadWorker {
       return;
     }
 
-    _sessionInvalidNotified =
-        true;
+    _sessionInvalidNotified = true;
 
-    final handler =
-        _sessionInvalidHandler;
+    final handler = _sessionInvalidHandler;
 
     if (handler == null) {
       return;
@@ -106,16 +134,237 @@ class TelegramDownloadWorker {
     )?
         onProgress,
   }) {
-    return _downloadWorker.execute(
-      type:
-          'download',
-      media:
-          media,
-      groupTitle:
-          groupTitle,
-      onProgress:
-          onProgress,
+    return _downloadMediaWithRecovery(
+      media,
+      groupTitle: groupTitle,
+      onProgress: onProgress,
     );
+  }
+
+  Future<String> _downloadMediaWithRecovery(
+    TelegramMedia media, {
+    required String groupTitle,
+    void Function(
+      int received,
+      int total,
+    )?
+        onProgress,
+  }) async {
+    int automaticRecoveries = 0;
+
+    while (true) {
+      if (_sessionResetting) {
+        throw const TelegramDownloadWorkerException(
+          'Telegram session reset.',
+        );
+      }
+
+      final watchdog =
+          Completer<void>();
+
+      Timer? watchdogTimer;
+
+      bool receivedProgress =
+          false;
+
+      void armWatchdog(
+        Duration duration,
+      ) {
+        if (watchdog.isCompleted) {
+          return;
+        }
+
+        watchdogTimer?.cancel();
+
+        watchdogTimer = Timer(
+          duration,
+          () {
+            if (!watchdog.isCompleted) {
+              watchdog.complete();
+            }
+          },
+        );
+      }
+
+      /*
+       * A primeira janela é maior porque inclui
+       * criação do isolate, conexão e aquecimento
+       * do pool de download.
+       */
+      armWatchdog(
+        _downloadStartTimeout,
+      );
+
+      final attemptFuture =
+          _downloadWorker.execute(
+        type: 'download',
+        media: media,
+        groupTitle: groupTitle,
+        onProgress: (
+          received,
+          total,
+        ) {
+          /*
+           * Qualquer progresso recebido prova que
+           * o pipeline ainda está respondendo.
+           */
+          receivedProgress = true;
+
+          armWatchdog(
+            _downloadInactivityTimeout,
+          );
+
+          onProgress?.call(
+            received,
+            total,
+          );
+        },
+      );
+
+      /*
+       * Transformamos sucesso/erro em um valor.
+       *
+       * Isso é importante porque Future.any não
+       * deve gerar erro não tratado se o watchdog
+       * vencer e depois o reset completar o Future
+       * original com erro.
+       */
+      final attemptResultFuture =
+          attemptFuture.then<_DownloadAttemptResult>(
+        (path) {
+          return _DownloadAttemptResult.completed(
+            path,
+          );
+        },
+        onError: (
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          return _DownloadAttemptResult.failed(
+            error,
+            stackTrace,
+          );
+        },
+      );
+
+      final watchdogResultFuture =
+          watchdog.future.then<_DownloadAttemptResult>(
+        (_) {
+          return const _DownloadAttemptResult.stalled();
+        },
+      );
+
+      late final _DownloadAttemptResult result;
+
+      try {
+        result = await Future.any(
+          <Future<_DownloadAttemptResult>>[
+            attemptResultFuture,
+            watchdogResultFuture,
+          ],
+        );
+      } finally {
+        watchdogTimer?.cancel();
+      }
+
+      // ========================================================
+      // SUCCESS
+      // ========================================================
+
+      if (result.status ==
+          _DownloadAttemptStatus.completed) {
+        return result.path!;
+      }
+
+      // ========================================================
+      // NORMAL ERROR
+      // ========================================================
+
+      if (result.status ==
+          _DownloadAttemptStatus.failed) {
+        /*
+         * Erros normais continuam sendo entregues
+         * imediatamente para a fila.
+         *
+         * Não fazemos retry indiscriminado aqui,
+         * pois erros como sessão inválida,
+         * FILE_REFERENCE_EXPIRED etc. precisam
+         * manter sua semântica original.
+         */
+        Error.throwWithStackTrace(
+          result.error!,
+          result.stackTrace ??
+              StackTrace.current,
+        );
+      }
+
+      // ========================================================
+      // STALLED DOWNLOAD
+      // ========================================================
+
+      final inactivity =
+          receivedProgress
+              ? _downloadInactivityTimeout
+              : _downloadStartTimeout;
+
+      final stallError =
+          TelegramDownloadStalledException(
+        'Telegram download stopped responding '
+        'for ${inactivity.inSeconds} seconds.',
+        recoveryNumber:
+            automaticRecoveries + 1,
+      );
+
+      /*
+       * Aqui reproduzimos somente para o subsistema
+       * de download aquilo que reiniciar o aplicativo
+       * faria:
+       *
+       * - mata o isolate;
+       * - derruba seus sockets;
+       * - limpa o client daquele isolate.
+       *
+       * O PreviewWorker permanece vivo.
+       */
+      await _downloadWorker.reset(
+        stallError,
+      );
+
+      /*
+       * Se logout/session reset começou ao mesmo
+       * tempo que o watchdog, não devemos recriar
+       * o worker.
+       */
+      if (_sessionResetting) {
+        throw const TelegramDownloadWorkerException(
+          'Telegram session reset.',
+        );
+      }
+
+      if (automaticRecoveries >=
+          _maxAutomaticRecoveries) {
+        throw TelegramDownloadStalledException(
+          'Telegram download stopped responding '
+          'after $_maxAutomaticRecoveries '
+          'automatic recovery attempts.',
+          recoveryNumber:
+              automaticRecoveries,
+        );
+      }
+
+      automaticRecoveries++;
+
+      /*
+       * O DownloadEngine preserva o .part e o
+       * .resume.json.
+       *
+       * A próxima execução cria um isolate novo,
+       * lê o checkpoint e continua dali.
+       */
+      await Future<void>.delayed(
+        _recoveryDelay,
+      );
+    }
   }
 
   // ============================================================
@@ -126,10 +375,8 @@ class TelegramDownloadWorker {
     TelegramMedia media,
   ) {
     return _previewWorker.execute(
-      type:
-          'preview',
-      media:
-          media,
+      type: 'preview',
+      media: media,
     );
   }
 
@@ -140,8 +387,7 @@ class TelegramDownloadWorker {
   void setInteractiveMode(
     bool interactive,
   ) {
-    _downloadWorker
-        .setInteractiveMode(
+    _downloadWorker.setInteractiveMode(
       interactive,
     );
   }
@@ -158,6 +404,8 @@ class TelegramDownloadWorker {
    * novamente normalmente.
    */
   Future<void> resetSession() async {
+    _sessionResetting = true;
+
     const reason =
         TelegramDownloadWorkerException(
       'Telegram session reset.',
@@ -175,15 +423,9 @@ class TelegramDownloadWorker {
         ],
       );
     } finally {
-      /*
-       * Uma nova sessão poderá ser criada depois
-       * deste reset.
-       *
-       * Portanto permitimos que uma futura
-       * invalidação seja reportada novamente.
-       */
-      _sessionInvalidNotified =
-          false;
+      _sessionInvalidNotified = false;
+
+      _sessionResetting = false;
     }
   }
 
@@ -192,22 +434,89 @@ class TelegramDownloadWorker {
   // ============================================================
 
   Future<void> dispose() async {
-    _sessionInvalidHandler =
-        null;
+    _sessionInvalidHandler = null;
 
-    await Future.wait(
-      [
-        _downloadWorker.dispose(),
-        _previewWorker.dispose(),
-      ],
-    );
+    _sessionResetting = true;
+
+    try {
+      await Future.wait(
+        [
+          _downloadWorker.dispose(),
+          _previewWorker.dispose(),
+        ],
+      );
+    } finally {
+      _sessionResetting = false;
+    }
   }
 }
+
+// ============================================================
+// DOWNLOAD ATTEMPT
+// ============================================================
+
+enum _DownloadAttemptStatus {
+  completed,
+  failed,
+  stalled,
+}
+
+class _DownloadAttemptResult {
+  final _DownloadAttemptStatus status;
+
+  final String? path;
+
+  final Object? error;
+
+  final StackTrace? stackTrace;
+
+  const _DownloadAttemptResult._({
+    required this.status,
+    this.path,
+    this.error,
+    this.stackTrace,
+  });
+
+  const _DownloadAttemptResult.completed(
+    String path,
+  ) : this._(
+          status:
+              _DownloadAttemptStatus.completed,
+          path:
+              path,
+        );
+
+  const _DownloadAttemptResult.failed(
+    Object error,
+    StackTrace stackTrace,
+  ) : this._(
+          status:
+              _DownloadAttemptStatus.failed,
+          error:
+              error,
+          stackTrace:
+              stackTrace,
+        );
+
+  const _DownloadAttemptResult.stalled()
+      : this._(
+          status:
+              _DownloadAttemptStatus.stalled,
+        );
+}
+
+// ============================================================
+// WORKER MODE
+// ============================================================
 
 enum _TelegramWorkerMode {
   download,
   preview,
 }
+
+// ============================================================
+// PERSISTENT WORKER
+// ============================================================
 
 class _PersistentTelegramWorker {
   final _TelegramWorkerMode mode;
@@ -245,16 +554,13 @@ class _PersistentTelegramWorker {
 
   final Map<int, _PendingWorkerRequest>
       _pending =
-      {};
+      <int, _PendingWorkerRequest>{};
 
-  int _nextRequestId =
-      0;
+  int _nextRequestId = 0;
 
-  bool _disposed =
-      false;
+  bool _disposed = false;
 
-  bool _interactiveMode =
-      false;
+  bool _interactiveMode = false;
 
   // ============================================================
   // INTERACTIVE MODE
@@ -263,28 +569,23 @@ class _PersistentTelegramWorker {
   void setInteractiveMode(
     bool value,
   ) {
-    _interactiveMode =
-        value;
+    _interactiveMode = value;
 
     if (mode !=
         _TelegramWorkerMode.download) {
       return;
     }
 
-    final commandPort =
-        _commandPort;
+    final commandPort = _commandPort;
 
-    if (commandPort ==
-        null) {
+    if (commandPort == null) {
       return;
     }
 
     commandPort.send(
       <String, dynamic>{
-        'type':
-            'interactive',
-        'value':
-            value,
+        'type': 'interactive',
+        'value': value,
       },
     );
   }
@@ -311,11 +612,9 @@ class _PersistentTelegramWorker {
 
     await _ensureStarted();
 
-    final commandPort =
-        _commandPort;
+    final commandPort = _commandPort;
 
-    if (commandPort ==
-        null) {
+    if (commandPort == null) {
       throw StateError(
         'Telegram worker is not available.',
       );
@@ -329,22 +628,16 @@ class _PersistentTelegramWorker {
 
     _pending[requestId] =
         _PendingWorkerRequest(
-      completer:
-          completer,
-      onProgress:
-          onProgress,
+      completer: completer,
+      onProgress: onProgress,
     );
 
     commandPort.send(
       <String, dynamic>{
-        'type':
-            type,
-        'requestId':
-            requestId,
-        'media':
-            media,
-        'groupTitle':
-            groupTitle,
+        'type': type,
+        'requestId': requestId,
+        'media': media,
+        'groupTitle': groupTitle,
       },
     );
 
@@ -362,34 +655,27 @@ class _PersistentTelegramWorker {
       );
     }
 
-    final resetting =
-        _resetFuture;
+    final resetting = _resetFuture;
 
-    if (resetting !=
-        null) {
+    if (resetting != null) {
       await resetting;
     }
 
-    if (_commandPort !=
-        null) {
+    if (_commandPort != null) {
       return;
     }
 
-    final existing =
-        _startFuture;
+    final existing = _startFuture;
 
-    if (existing !=
-        null) {
+    if (existing != null) {
       await existing;
 
       return;
     }
 
-    final future =
-        _start();
+    final future = _start();
 
-    _startFuture =
-        future;
+    _startFuture = future;
 
     try {
       await future;
@@ -398,8 +684,7 @@ class _PersistentTelegramWorker {
         _startFuture,
         future,
       )) {
-        _startFuture =
-            null;
+        _startFuture = null;
       }
     }
   }
@@ -414,14 +699,9 @@ class _PersistentTelegramWorker {
     final exitPort =
         ReceivePort();
 
-    _eventPort =
-        eventPort;
-
-    _errorPort =
-        errorPort;
-
-    _exitPort =
-        exitPort;
+    _eventPort = eventPort;
+    _errorPort = errorPort;
+    _exitPort = exitPort;
 
     final readyCompleter =
         Completer<void>();
@@ -440,8 +720,7 @@ class _PersistentTelegramWorker {
         dynamic error,
       ) {
         if (_disposed ||
-            _resetFuture !=
-                null) {
+            _resetFuture != null) {
           return;
         }
 
@@ -473,8 +752,7 @@ class _PersistentTelegramWorker {
           exception,
         );
 
-        if (!readyCompleter
-            .isCompleted) {
+        if (!readyCompleter.isCompleted) {
           readyCompleter.completeError(
             exception,
           );
@@ -486,19 +764,13 @@ class _PersistentTelegramWorker {
         exitPort.listen(
       (_) {
         if (_disposed ||
-            _resetFuture !=
-                null) {
+            _resetFuture != null) {
           return;
         }
 
-        _commandPort =
-            null;
-
-        _isolate =
-            null;
-
-        _startFuture =
-            null;
+        _commandPort = null;
+        _isolate = null;
+        _startFuture = null;
 
         const exception =
             TelegramDownloadWorkerException(
@@ -509,8 +781,7 @@ class _PersistentTelegramWorker {
           exception,
         );
 
-        if (!readyCompleter
-            .isCompleted) {
+        if (!readyCompleter.isCompleted) {
           readyCompleter.completeError(
             exception,
           );
@@ -524,23 +795,17 @@ class _PersistentTelegramWorker {
               Map<String, dynamic>>(
         _telegramPersistentWorkerEntryPoint,
         <String, dynamic>{
-          'eventPort':
-              eventPort.sendPort,
-          'mode':
-              mode.name,
+          'eventPort': eventPort.sendPort,
+          'mode': mode.name,
         },
         debugName:
             mode ==
-                    _TelegramWorkerMode
-                        .download
+                    _TelegramWorkerMode.download
                 ? 'FabulariumTelegramDownloadWorker'
                 : 'FabulariumTelegramPreviewWorker',
-        errorsAreFatal:
-            true,
-        onError:
-            errorPort.sendPort,
-        onExit:
-            exitPort.sendPort,
+        errorsAreFatal: true,
+        onError: errorPort.sendPort,
+        onExit: exitPort.sendPort,
       );
 
       await readyCompleter.future;
@@ -568,66 +833,55 @@ class _PersistentTelegramWorker {
     final type =
         message['type'];
 
-    if (type ==
-        'ready') {
+    if (type == 'ready') {
       final commandPort =
           message['commandPort'];
 
-      if (commandPort
-          is SendPort) {
+      if (commandPort is SendPort) {
         _commandPort =
             commandPort;
 
         if (mode ==
-            _TelegramWorkerMode
-                .download) {
+            _TelegramWorkerMode.download) {
           commandPort.send(
             <String, dynamic>{
-              'type':
-                  'interactive',
+              'type': 'interactive',
               'value':
                   _interactiveMode,
             },
           );
         }
 
-        final readyCompleter =
+        final ready =
             _readyCompleter;
 
-        if (readyCompleter !=
-                null &&
-            !readyCompleter
-                .isCompleted) {
-          readyCompleter.complete();
+        if (ready != null &&
+            !ready.isCompleted) {
+          ready.complete();
         }
       }
 
       return;
     }
 
-    if (type ==
-        'fatal') {
-      if (_resetFuture !=
-          null) {
+    if (type == 'fatal') {
+      if (_resetFuture != null) {
         return;
       }
 
       final errorMessage =
-          message['error']
-                  ?.toString() ??
+          message['error']?.toString() ??
               'Fatal Telegram worker error.';
 
       final stackTrace =
-          message['stackTrace']
-              ?.toString();
+          message['stackTrace']?.toString();
 
       if (_isInvalidTelegramSessionError(
         errorMessage,
       )) {
         _handleInvalidSession(
           errorMessage,
-          stackTrace:
-              stackTrace,
+          stackTrace: stackTrace,
         );
 
         return;
@@ -636,18 +890,15 @@ class _PersistentTelegramWorker {
       final error =
           TelegramDownloadWorkerException(
         errorMessage,
-        stackTrace:
-            stackTrace,
+        stackTrace: stackTrace,
       );
 
-      final readyCompleter =
+      final ready =
           _readyCompleter;
 
-      if (readyCompleter !=
-              null &&
-          !readyCompleter
-              .isCompleted) {
-        readyCompleter.completeError(
+      if (ready != null &&
+          !ready.isCompleted) {
+        ready.completeError(
           error,
         );
       }
@@ -669,13 +920,11 @@ class _PersistentTelegramWorker {
     final pending =
         _pending[requestId];
 
-    if (pending ==
-        null) {
+    if (pending == null) {
       return;
     }
 
-    if (type ==
-        'progress') {
+    if (type == 'progress') {
       final received =
           message['received'];
 
@@ -693,8 +942,7 @@ class _PersistentTelegramWorker {
       return;
     }
 
-    if (type ==
-        'completed') {
+    if (type == 'completed') {
       _pending.remove(
         requestId,
       );
@@ -725,29 +973,20 @@ class _PersistentTelegramWorker {
       return;
     }
 
-    if (type ==
-        'error') {
+    if (type == 'error') {
       final errorMessage =
-          message['error']
-                  ?.toString() ??
+          message['error']?.toString() ??
               'Unknown Telegram worker error.';
 
       final stackTrace =
-          message['stackTrace']
-              ?.toString();
+          message['stackTrace']?.toString();
 
       if (_isInvalidTelegramSessionError(
         errorMessage,
       )) {
-        /*
-         * _handleInvalidSession chama _failAll(),
-         * portanto também finaliza a requisição
-         * atual com o erro correto.
-         */
         _handleInvalidSession(
           errorMessage,
-          stackTrace:
-              stackTrace,
+          stackTrace: stackTrace,
         );
 
         return;
@@ -763,8 +1002,7 @@ class _PersistentTelegramWorker {
         pending.completer.completeError(
           TelegramDownloadWorkerException(
             errorMessage,
-            stackTrace:
-                stackTrace,
+            stackTrace: stackTrace,
           ),
         );
       }
@@ -786,8 +1024,7 @@ class _PersistentTelegramWorker {
     final exception =
         TelegramDownloadSessionInvalidException(
       errorMessage,
-      stackTrace:
-          stackTrace,
+      stackTrace: stackTrace,
     );
 
     final ready =
@@ -800,31 +1037,16 @@ class _PersistentTelegramWorker {
       );
     }
 
-    /*
-     * Falha imediatamente qualquer download
-     * ou preview pendente deste worker.
-     */
     _failAll(
       exception,
     );
 
-    /*
-     * Coloca este worker em reset imediatamente,
-     * evitando que uma nova operação utilize a
-     * mesma sessão inválida enquanto o lifecycle
-     * principal está encerrando a sessão.
-     */
     unawaited(
       reset(
         exception,
       ),
     );
 
-    /*
-     * A callback chega ao TelegramDownloadWorker,
-     * que faz dedupe entre Download e Preview
-     * antes de avisar TelegramSessionLifecycle.
-     */
     onSessionInvalid(
       errorMessage,
     );
@@ -864,13 +1086,11 @@ class _PersistentTelegramWorker {
     final existing =
         _resetFuture;
 
-    if (existing !=
-        null) {
+    if (existing != null) {
       return existing;
     }
 
-    late final Future<void>
-        future;
+    late final Future<void> future;
 
     future =
         _performReset(
@@ -881,14 +1101,12 @@ class _PersistentTelegramWorker {
           _resetFuture,
           future,
         )) {
-          _resetFuture =
-              null;
+          _resetFuture = null;
         }
       },
     );
 
-    _resetFuture =
-        future;
+    _resetFuture = future;
 
     return future;
   }
@@ -906,8 +1124,7 @@ class _PersistentTelegramWorker {
       );
     }
 
-    _readyCompleter =
-        null;
+    _readyCompleter = null;
 
     _failAll(
       reason,
@@ -934,46 +1151,26 @@ class _PersistentTelegramWorker {
     final exitPort =
         _exitPort;
 
-    _isolate =
-        null;
+    _isolate = null;
+    _commandPort = null;
 
-    _commandPort =
-        null;
+    _eventSubscription = null;
+    _errorSubscription = null;
+    _exitSubscription = null;
 
-    _eventSubscription =
-        null;
+    _eventPort = null;
+    _errorPort = null;
+    _exitPort = null;
 
-    _errorSubscription =
-        null;
-
-    _exitSubscription =
-        null;
-
-    _eventPort =
-        null;
-
-    _errorPort =
-        null;
-
-    _exitPort =
-        null;
-
-    _startFuture =
-        null;
+    _startFuture = null;
 
     isolate?.kill(
-      priority:
-          Isolate.immediate,
+      priority: Isolate.immediate,
     );
 
-    await eventSubscription
-        ?.cancel();
-
-    await errorSubscription
-        ?.cancel();
-
-    await exitSubscription
-        ?.cancel();
+    await eventSubscription?.cancel();
+    await errorSubscription?.cancel();
+    await exitSubscription?.cancel();
 
     eventPort?.close();
     errorPort?.close();
@@ -989,8 +1186,7 @@ class _PersistentTelegramWorker {
       return;
     }
 
-    _disposed =
-        true;
+    _disposed = true;
 
     await _performReset(
       const TelegramDownloadWorkerException(
@@ -1000,9 +1196,12 @@ class _PersistentTelegramWorker {
   }
 }
 
+// ============================================================
+// PENDING REQUEST
+// ============================================================
+
 class _PendingWorkerRequest {
-  final Completer<String>
-      completer;
+  final Completer<String> completer;
 
   final void Function(
     int received,
@@ -1016,6 +1215,10 @@ class _PendingWorkerRequest {
   });
 }
 
+// ============================================================
+// EXCEPTIONS
+// ============================================================
+
 class TelegramDownloadWorkerException
     implements Exception {
   final String message;
@@ -1028,8 +1231,7 @@ class TelegramDownloadWorkerException
   });
 
   @override
-  String toString() =>
-      message;
+  String toString() => message;
 }
 
 class TelegramDownloadSessionInvalidException
@@ -1039,6 +1241,20 @@ class TelegramDownloadSessionInvalidException
     super.stackTrace,
   });
 }
+
+class TelegramDownloadStalledException
+    extends TelegramDownloadWorkerException {
+  final int recoveryNumber;
+
+  const TelegramDownloadStalledException(
+    super.message, {
+    required this.recoveryNumber,
+  });
+}
+
+// ============================================================
+// SESSION ERROR
+// ============================================================
 
 bool _isInvalidTelegramSessionError(
   String message,
@@ -1057,23 +1273,27 @@ bool _isInvalidTelegramSessionError(
       );
 }
 
+// ============================================================
+// RUNTIME POLICY
+// ============================================================
+
 class _DownloadRuntimePolicy {
-  bool interactive =
-      false;
+  bool interactive = false;
 
   int get maxInFlight =>
-      interactive
-          ? 1
-          : 4;
+      interactive ? 1 : 4;
 
   Duration get yieldDelay =>
       interactive
           ? const Duration(
-              milliseconds:
-                  8,
+              milliseconds: 8,
             )
           : Duration.zero;
 }
+
+// ============================================================
+// ISOLATE
+// ============================================================
 
 @pragma(
   'vm:entry-point',
@@ -1089,8 +1309,7 @@ Future<void> _telegramPersistentWorkerEntryPoint(
   }
 
   final mode =
-      bootstrap['mode']
-          ?.toString();
+      bootstrap['mode']?.toString();
 
   final commandPort =
       ReceivePort();
@@ -1108,8 +1327,7 @@ Future<void> _telegramPersistentWorkerEntryPoint(
 
     eventPort.send(
       <String, dynamic>{
-        'type':
-            'ready',
+        'type': 'ready',
         'commandPort':
             commandPort.sendPort,
       },
@@ -1129,22 +1347,18 @@ Future<void> _telegramPersistentWorkerEntryPoint(
       final type =
           command['type'];
 
-      if (type ==
-          'interactive') {
+      if (type == 'interactive') {
         runtimePolicy.interactive =
-            command['value'] ==
-                true;
+            command['value'] == true;
 
         continue;
       }
 
-      if (type ==
-          'shutdown') {
+      if (type == 'shutdown') {
         final current =
             activeDownload;
 
-        if (current !=
-            null) {
+        if (current != null) {
           try {
             await current;
           } catch (_) {}
@@ -1164,19 +1378,19 @@ Future<void> _telegramPersistentWorkerEntryPoint(
         continue;
       }
 
+      // ========================================================
+      // DOWNLOAD
+      // ========================================================
+
       if (mode ==
               _TelegramWorkerMode
                   .download.name &&
-          type ==
-              'download') {
-        if (activeDownload !=
-            null) {
+          type == 'download') {
+        if (activeDownload != null) {
           eventPort.send(
             <String, dynamic>{
-              'type':
-                  'error',
-              'requestId':
-                  requestId,
+              'type': 'error',
+              'requestId': requestId,
               'error':
                   'Download worker is already busy.',
             },
@@ -1187,12 +1401,9 @@ Future<void> _telegramPersistentWorkerEntryPoint(
 
         final operation =
             _executeDownloadCommand(
-          eventPort:
-              eventPort,
-          requestId:
-              requestId,
-          media:
-              media,
+          eventPort: eventPort,
+          requestId: requestId,
+          media: media,
           groupTitle:
               command['groupTitle']
                       ?.toString() ??
@@ -1201,14 +1412,12 @@ Future<void> _telegramPersistentWorkerEntryPoint(
               runtimePolicy,
         );
 
-        activeDownload =
-            operation;
+        activeDownload = operation;
 
         unawaited(
           operation.whenComplete(
             () {
-              activeDownload =
-                  null;
+              activeDownload = null;
             },
           ),
         );
@@ -1216,18 +1425,18 @@ Future<void> _telegramPersistentWorkerEntryPoint(
         continue;
       }
 
+      // ========================================================
+      // PREVIEW
+      // ========================================================
+
       if (mode ==
               _TelegramWorkerMode
                   .preview.name &&
-          type ==
-              'preview') {
+          type == 'preview') {
         await _executePreviewCommand(
-          eventPort:
-              eventPort,
-          requestId:
-              requestId,
-          media:
-              media,
+          eventPort: eventPort,
+          requestId: requestId,
+          media: media,
         );
       }
     }
@@ -1237,10 +1446,8 @@ Future<void> _telegramPersistentWorkerEntryPoint(
   ) {
     eventPort.send(
       <String, dynamic>{
-        'type':
-            'fatal',
-        'error':
-            error.toString(),
+        'type': 'fatal',
+        'error': error.toString(),
         'stackTrace':
             stackTrace.toString(),
       },
@@ -1254,6 +1461,10 @@ Future<void> _telegramPersistentWorkerEntryPoint(
   }
 }
 
+// ============================================================
+// DOWNLOAD COMMAND
+// ============================================================
+
 Future<void> _executeDownloadCommand({
   required SendPort eventPort,
   required int requestId,
@@ -1261,8 +1472,7 @@ Future<void> _executeDownloadCommand({
   required String groupTitle,
   required _DownloadRuntimePolicy runtimePolicy,
 }) async {
-  int lastReceived =
-      0;
+  int lastReceived = 0;
 
   int lastTotal =
       media.size;
@@ -1277,13 +1487,10 @@ Future<void> _executeDownloadCommand({
     int total, {
     bool force = false,
   }) {
-    lastReceived =
-        received;
+    lastReceived = received;
 
-    if (total >
-        0) {
-      lastTotal =
-          total;
+    if (total > 0) {
+      lastTotal = total;
     }
 
     final now =
@@ -1294,25 +1501,19 @@ Future<void> _executeDownloadCommand({
               lastSent,
             ) <
             const Duration(
-              milliseconds:
-                  120,
+              milliseconds: 120,
             )) {
       return;
     }
 
-    lastSent =
-        now;
+    lastSent = now;
 
     eventPort.send(
       <String, dynamic>{
-        'type':
-            'progress',
-        'requestId':
-            requestId,
-        'received':
-            lastReceived,
-        'total':
-            lastTotal,
+        'type': 'progress',
+        'requestId': requestId,
+        'received': lastReceived,
+        'total': lastTotal,
       },
     );
   }
@@ -1323,18 +1524,12 @@ Future<void> _executeDownloadCommand({
             .instance
             .downloadMedia(
       media,
-      groupTitle:
-          groupTitle,
-      maxInFlightProvider:
-          () =>
-              runtimePolicy
-                  .maxInFlight,
-      yieldDelayProvider:
-          () =>
-              runtimePolicy
-                  .yieldDelay,
-      onProgress:
-          (
+      groupTitle: groupTitle,
+      maxInFlightProvider: () =>
+          runtimePolicy.maxInFlight,
+      yieldDelayProvider: () =>
+          runtimePolicy.yieldDelay,
+      onProgress: (
         received,
         total,
       ) {
@@ -1346,26 +1541,20 @@ Future<void> _executeDownloadCommand({
     );
 
     progress(
-      media.size >
-              0
+      media.size > 0
           ? media.size
           : lastReceived,
-      media.size >
-              0
+      media.size > 0
           ? media.size
           : lastTotal,
-      force:
-          true,
+      force: true,
     );
 
     eventPort.send(
       <String, dynamic>{
-        'type':
-            'completed',
-        'requestId':
-            requestId,
-        'path':
-            path,
+        'type': 'completed',
+        'requestId': requestId,
+        'path': path,
       },
     );
   } catch (
@@ -1374,18 +1563,19 @@ Future<void> _executeDownloadCommand({
   ) {
     eventPort.send(
       <String, dynamic>{
-        'type':
-            'error',
-        'requestId':
-            requestId,
-        'error':
-            error.toString(),
+        'type': 'error',
+        'requestId': requestId,
+        'error': error.toString(),
         'stackTrace':
             stackTrace.toString(),
       },
     );
   }
 }
+
+// ============================================================
+// PREVIEW COMMAND
+// ============================================================
 
 Future<void> _executePreviewCommand({
   required SendPort eventPort,
@@ -1402,12 +1592,9 @@ Future<void> _executePreviewCommand({
 
     eventPort.send(
       <String, dynamic>{
-        'type':
-            'completed',
-        'requestId':
-            requestId,
-        'path':
-            path,
+        'type': 'completed',
+        'requestId': requestId,
+        'path': path,
       },
     );
   } catch (
@@ -1416,12 +1603,9 @@ Future<void> _executePreviewCommand({
   ) {
     eventPort.send(
       <String, dynamic>{
-        'type':
-            'error',
-        'requestId':
-            requestId,
-        'error':
-            error.toString(),
+        'type': 'error',
+        'requestId': requestId,
+        'error': error.toString(),
         'stackTrace':
             stackTrace.toString(),
       },
