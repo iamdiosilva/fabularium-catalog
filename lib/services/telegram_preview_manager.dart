@@ -3,7 +3,7 @@ import 'dart:async';
 import '../models/telegram_media.dart';
 import 'download_queue_service.dart';
 import 'telegram_download_worker.dart';
-import 'telegram_service_coordinator.dart';
+import 'telegram_performance_coordinator.dart';
 
 class TelegramPreviewManager {
   TelegramPreviewManager._();
@@ -80,10 +80,6 @@ class TelegramPreviewManager {
     final existing =
         _inFlight[key];
 
-    /*
-     * Reutilizamos somente uma requisição
-     * pertencente à tela atual.
-     */
     if (existing !=
             null &&
         existing.generation ==
@@ -144,15 +140,6 @@ class TelegramPreviewManager {
         final request =
             _queue.first;
 
-        /*
-         * Solicitação de uma página que já
-         * não existe mais.
-         *
-         * Removemos UMA POR VEZ.
-         *
-         * Isso evita a tempestade de
-         * completeError() durante Navigator.pop.
-         */
         if (request.generation !=
             _generation) {
           _queue.removeAt(
@@ -171,9 +158,6 @@ class TelegramPreviewManager {
             );
           }
 
-          /*
-           * Distribui os cancelamentos.
-           */
           await Future<void>.delayed(
             const Duration(
               milliseconds:
@@ -196,26 +180,12 @@ class TelegramPreviewManager {
             break;
           }
 
-          /*
-           * Pode ter ocorrido troca de tela
-           * durante o delay.
-           */
           if (_queue.first.generation !=
               _generation) {
             continue;
           }
         }
 
-        /*
-         * O caso crítico que estávamos vendo:
-         *
-         * arquivo grande baixando
-         * +
-         * usuário abrindo grupos
-         *
-         * Nesse momento previews não possuem
-         * prioridade.
-         */
         await _waitForPerformanceWindow(
           request,
         );
@@ -229,10 +199,6 @@ class TelegramPreviewManager {
           continue;
         }
 
-        /*
-         * Remove somente no momento em que
-         * realmente vamos executar.
-         */
         _queue.removeAt(
           0,
         );
@@ -327,17 +293,6 @@ class TelegramPreviewManager {
       final userInteracting =
           _performance.isInteractive;
 
-      /*
-       * Apenas a combinação das duas coisas
-       * pausa preview:
-       *
-       * download grande
-       * +
-       * navegação ativa
-       *
-       * Se o usuário parar de navegar por
-       * ~1,4 s, os previews podem continuar.
-       */
       if (!largeDownloadRunning ||
           !userInteracting) {
         return;
@@ -366,11 +321,6 @@ class TelegramPreviewManager {
     }
   }
 
-  /*
-   * Uma nova tela significa uma nova geração.
-   *
-   * Nada é cancelado imediatamente.
-   */
   void prepareForScreen() {
     _generation++;
 
@@ -380,14 +330,6 @@ class TelegramPreviewManager {
     _startProcessing();
   }
 
-  /*
-   * Chamado atualmente no dispose da página.
-   *
-   * Antes esse método disparava vários
-   * completeError() síncronos.
-   *
-   * Agora apenas invalida a geração.
-   */
   void cancelPending({
     bool resetInitialDelay = true,
   }) {

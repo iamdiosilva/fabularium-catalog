@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'pages/catalog_page.dart';
 import 'pages/download_queue_page.dart';
 import 'services/performance_monitor.dart';
-import 'services/telegram_service_coordinator.dart';
+import 'services/telegram_performance_coordinator.dart';
 import 'widgets/download_queue_overlay.dart';
 
 final GlobalKey<NavigatorState>
@@ -57,40 +57,30 @@ class FabulariumApp
         context,
         child,
       ) {
-        /*
-         * Qualquer interação do usuário
-         * coloca temporariamente o download
-         * em modo interativo.
-         */
         return Listener(
           behavior:
               HitTestBehavior.translucent,
-
           onPointerDown:
               (_) {
             performance
                 .noteInteraction();
           },
-
           onPointerMove:
               (_) {
             performance
                 .noteInteraction();
           },
-
           onPointerSignal:
               (_) {
             performance
                 .noteInteraction();
           },
-
           child:
               Stack(
             children: [
               if (child !=
                   null)
                 child,
-
               DownloadQueueOverlay(
                 onOpen:
                     _openDownloads,

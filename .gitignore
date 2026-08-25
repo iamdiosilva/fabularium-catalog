@@ -19,8 +19,8 @@ migrate_working_dir/
 .idea/
 
 # The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
+# VS Code which you may wish to be included in version control, so this line is
+# commented out by default.
 #.vscode/
 
 # Flutter/Dart/Pub related
@@ -31,7 +31,7 @@ migrate_working_dir/
 .pub-cache/
 .pub/
 /build/
-/coverage/
+coverage/
 
 # Symbolication related
 app.*.symbols
@@ -43,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Fabularium local Telegram data
+telegram_auth.json
+**/telegram_auth.json
+*.part

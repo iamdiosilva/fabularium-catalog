@@ -1,8 +1,6 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:path/path.dart' as p;
 import 'package:t/t.dart' as t;
 import 'package:tg/tg.dart' as tg;
 
@@ -68,113 +66,74 @@ class TelegramService {
   // ============================================================
 
   Future<void> connect() async {
-  /*
-   * Depois que autenticamos, o cliente do
-   * MAIN ISOLATE fica desconectado de propósito.
-   *
-   * Portanto não usamos _telegramClient.client
-   * para determinar se estamos conectados.
-   *
-   * O estado authenticated significa:
-   *
-   * - sessão válida;
-   * - telegram_auth.json disponível;
-   * - workers podem criar suas conexões.
-   */
-  if (_state ==
-      TelegramAuthState.authenticated) {
-    return;
-  }
+    if (_state ==
+        TelegramAuthState.authenticated) {
+      return;
+    }
 
-  _setState(
-    TelegramAuthState.connecting,
-  );
+    _setState(
+      TelegramAuthState.connecting,
+    );
 
-  try {
-    final client =
-        await _telegramClient.connect();
+    try {
+      final client =
+          await _telegramClient.connect();
 
-    /*
-     * Se já existe uma sessão salva,
-     * validamos uma única vez no MAIN ISOLATE.
-     */
-    if (_telegramClient.hasSavedSession) {
-      final valid =
-          await _validateSession(
-        client,
-      );
+      if (_telegramClient.hasSavedSession) {
+        final valid =
+            await _validateSession(
+          client,
+        );
 
-      if (valid) {
-        /*
-         * ======================================================
-         * IMPORTANTE
-         * ======================================================
-         *
-         * A sessão está válida.
-         *
-         * Não precisamos manter TelegramClient,
-         * socket, MTProto, AES ou parsing no
-         * isolate da interface.
-         */
-        await _telegramClient.disconnect();
+        if (valid) {
+          /*
+           * A sessão está válida.
+           *
+           * O MAIN ISOLATE não mantém uma
+           * conexão Telegram depois da
+           * autenticação.
+           */
+          await _telegramClient.disconnect();
 
-        /*
-         * Só marcamos como autenticado DEPOIS
-         * de remover completamente a conexão
-         * Telegram do MAIN ISOLATE.
-         */
+          _setState(
+            TelegramAuthState.authenticated,
+          );
+
+          return;
+        }
+
+        await _telegramClient
+            .deleteSession();
+
+        await _telegramClient
+            .disconnect();
+
         _setState(
-          TelegramAuthState.authenticated,
+          TelegramAuthState.disconnected,
         );
 
         return;
       }
 
       /*
-       * A sessão existe, mas não é mais válida.
+       * Sem sessão salva precisamos manter
+       * a conexão aberta até concluir:
+       *
+       * sendCode -> signIn -> 2FA
        */
-      await _telegramClient
-          .deleteSession();
-
-      await _telegramClient
-          .disconnect();
-
       _setState(
-        TelegramAuthState.disconnected,
+        TelegramAuthState.phoneRequired,
       );
+    } catch (e) {
+      try {
+        await _telegramClient.disconnect();
+      } catch (_) {}
 
-      return;
+      _setError(
+        e,
+      );
     }
-
-    /*
-     * Não existe sessão ainda.
-     *
-     * Mantemos a conexão aberta porque ainda
-     * precisamos fazer:
-     *
-     * sendCode
-     * signIn
-     * 2FA
-     */
-    _setState(
-      TelegramAuthState.phoneRequired,
-    );
-  } catch (e) {
-    /*
-     * Se houve erro durante a tentativa de
-     * conexão/autenticação, garantimos que
-     * nenhuma conexão parcial fique presa
-     * no MAIN ISOLATE.
-     */
-    try {
-      await _telegramClient.disconnect();
-    } catch (_) {}
-
-    _setError(
-      e,
-    );
   }
-}
 
   Future<bool> _validateSession(
     tg.Client client,
@@ -312,121 +271,70 @@ class TelegramService {
         TelegramAuthState.codeRequired,
       );
     } catch (e) {
-      _setError(e);
+      _setError(
+        e,
+      );
     }
   }
 
   Future<void> signIn(
-  String code,
-) async {
-  final client =
-      _telegramClient.client;
+    String code,
+  ) async {
+    final client =
+        _telegramClient.client;
 
-  final authSentCode =
-      _authSentCode;
+    final authSentCode =
+        _authSentCode;
 
-  final phoneNumber =
-      _phoneNumber;
+    final phoneNumber =
+        _phoneNumber;
 
-  if (client == null ||
-      authSentCode == null ||
-      phoneNumber == null) {
-    _setError(
-      'A autenticação não foi iniciada corretamente.',
-    );
-
-    return;
-  }
-
-  try {
-    final response =
-        await client.auth.signIn(
-      phoneCodeHash:
-          authSentCode.phoneCodeHash,
-      phoneNumber:
-          phoneNumber,
-      phoneCode:
-          code.trim(),
-    );
-
-    if (response.error == null) {
-      /*
-       * Primeiro persistimos a AuthorizationKey.
-       *
-       * Os workers usarão esse arquivo para
-       * criar suas próprias conexões.
-       */
-      await _telegramClient
-          .saveSession();
-
-      /*
-       * ========================================================
-       * IMPORTANTE
-       * ========================================================
-       *
-       * O login terminou.
-       *
-       * A partir daqui não queremos mais nenhum
-       * TelegramClient/socket no MAIN ISOLATE.
-       */
-      await _telegramClient
-          .disconnect();
-
-      /*
-       * Limpamos os dados temporários utilizados
-       * somente durante a autenticação.
-       */
-      _authSentCode =
-          null;
-
-      _accountPassword =
-          null;
-
-      _phoneNumber =
-          null;
-
-      /*
-       * Mantemos o estado lógico autenticado.
-       *
-       * authenticated NÃO significa que existe
-       * socket Telegram no MAIN ISOLATE.
-       *
-       * Significa apenas que existe uma sessão
-       * válida disponível para os workers.
-       */
-      _setState(
-        TelegramAuthState.authenticated,
+    if (client == null ||
+        authSentCode == null ||
+        phoneNumber == null) {
+      _setError(
+        'A autenticação não foi iniciada corretamente.',
       );
 
       return;
     }
 
-    final errorMessage =
-        response.error!.errorMessage;
+    try {
+      final response =
+          await client.auth.signIn(
+        phoneCodeHash:
+            authSentCode.phoneCodeHash,
+        phoneNumber:
+            phoneNumber,
+        phoneCode:
+            code.trim(),
+      );
 
-    /*
-     * Conta com autenticação em duas etapas.
-     *
-     * Aqui ainda precisamos manter a conexão
-     * do MAIN ISOLATE porque o processo de
-     * autenticação ainda não terminou.
-     */
-    if (errorMessage ==
-        'SESSION_PASSWORD_NEEDED') {
-      await _loadPassword();
+      if (response.error == null) {
+        await _completeAuthentication();
 
-      return;
+        return;
+      }
+
+      final errorMessage =
+          response.error!.errorMessage;
+
+      if (errorMessage ==
+          'SESSION_PASSWORD_NEEDED') {
+        await _loadPassword();
+
+        return;
+      }
+
+      _setError(
+        errorMessage,
+      );
+    } catch (e) {
+      _setError(
+        e,
+      );
     }
-
-    _setError(
-      errorMessage,
-    );
-  } catch (e) {
-    _setError(
-      e,
-    );
   }
-}
 
   Future<void> _loadPassword() async {
     final client =
@@ -472,67 +380,81 @@ class TelegramService {
         TelegramAuthState.passwordRequired,
       );
     } catch (e) {
-      _setError(e);
+      _setError(
+        e,
+      );
     }
   }
 
   Future<void> checkPassword(
-  String password,
-) async {
-  final client =
-      _telegramClient.client;
+    String password,
+  ) async {
+    final client =
+        _telegramClient.client;
 
-  final accountPassword =
-      _accountPassword;
+    final accountPassword =
+        _accountPassword;
 
-  if (client == null ||
-      accountPassword == null) {
-    _setError(
-      'Informações de 2FA não disponíveis.',
-    );
-
-    return;
-  }
-
-  try {
-    final passwordResult =
-        await tg.check2FA(
-      accountPassword,
-      password,
-    );
-
-    final response =
-        await client.auth
-            .checkPassword(
-      password:
-          passwordResult,
-    );
-
-    if (response.error != null) {
+    if (client == null ||
+        accountPassword == null) {
       _setError(
-        response.error!.errorMessage,
+        'Informações de 2FA não disponíveis.',
       );
 
       return;
     }
 
-    /*
-     * Autenticação 2FA terminou.
-     *
-     * Primeiro salvamos a sessão para os
-     * workers.
-     */
+    try {
+      final passwordResult =
+          await tg.check2FA(
+        accountPassword,
+        password,
+      );
+
+      final response =
+          await client.auth
+              .checkPassword(
+        password:
+            passwordResult,
+      );
+
+      if (response.error != null) {
+        _setError(
+          response.error!.errorMessage,
+        );
+
+        return;
+      }
+
+      await _completeAuthentication();
+    } catch (e) {
+      _setError(
+        e,
+      );
+    }
+  }
+
+  Future<void>
+      _completeAuthentication() async {
     await _telegramClient
         .saveSession();
 
     /*
-     * ==========================================================
-     * REMOVE TELEGRAM DO MAIN ISOLATE
-     * ==========================================================
+     * Depois que a sessão foi persistida,
+     * toda navegação Telegram acontece nos
+     * workers.
      */
     await _telegramClient
         .disconnect();
 
+    _clearAuthTemporaryState();
+
+    _setState(
+      TelegramAuthState.authenticated,
+    );
+  }
+
+  void _clearAuthTemporaryState() {
     _authSentCode =
         null;
 
@@ -541,179 +463,15 @@ class TelegramService {
 
     _phoneNumber =
         null;
-
-    /*
-     * Continuamos logicamente autenticados,
-     * mesmo sem uma conexão Telegram no
-     * isolate da interface.
-     */
-    _setState(
-      TelegramAuthState.authenticated,
-    );
-  } catch (e) {
-    _setError(
-      e,
-    );
-  }
-}
-
-  // ============================================================
-  // GROUPS
-  // ============================================================
-
-  Future<List<TelegramGroup>>
-      getGroups() async {
-    final client =
-        _telegramClient.client;
-
-    if (client == null) {
-      throw StateError(
-        'Cliente Telegram não está conectado.',
-      );
-    }
-
-    final response =
-        await client.messages
-            .getDialogs(
-      excludePinned: false,
-      offsetDate:
-          DateTime.fromMillisecondsSinceEpoch(
-        0,
-      ),
-      offsetId:
-          0,
-      offsetPeer:
-          const t.InputPeerEmpty(),
-      limit:
-          100,
-      hash:
-          0,
-    );
-
-    if (response.error != null) {
-      final errorMessage =
-          response.error!.errorMessage;
-
-      if (_isInvalidSessionError(
-        errorMessage,
-      )) {
-        await _invalidateSession();
-      }
-
-      throw Exception(
-        errorMessage,
-      );
-    }
-
-    final result =
-        response.result;
-
-    if (result == null) {
-      return [];
-    }
-
-    List<dynamic> chats =
-        [];
-
-    try {
-      final dynamic dialogs =
-          result;
-
-      chats =
-          List<dynamic>.from(
-        dialogs.chats as List,
-      );
-    } catch (_) {
-      return [];
-    }
-
-    final groups =
-        <TelegramGroup>[];
-
-    for (final dynamic chat
-        in chats) {
-      final type =
-          chat.runtimeType.toString();
-
-      if (type == 'Chat') {
-        groups.add(
-          TelegramGroup(
-            id:
-                chat.id as int,
-            title:
-                chat.title as String,
-            accessHash:
-                null,
-            isChannel:
-                false,
-          ),
-        );
-
-        continue;
-      }
-
-      if (type == 'Channel') {
-        bool megagroup =
-            false;
-
-        bool gigagroup =
-            false;
-
-        try {
-          megagroup =
-              chat.megagroup ==
-                  true;
-        } catch (_) {}
-
-        try {
-          gigagroup =
-              chat.gigagroup ==
-                  true;
-        } catch (_) {}
-
-        if (!megagroup &&
-            !gigagroup) {
-          continue;
-        }
-
-        int? accessHash;
-
-        try {
-          accessHash =
-              chat.accessHash
-                  as int?;
-        } catch (_) {}
-
-        groups.add(
-          TelegramGroup(
-            id:
-                chat.id as int,
-            title:
-                chat.title as String,
-            accessHash:
-                accessHash,
-            isChannel:
-                true,
-          ),
-        );
-      }
-    }
-
-    groups.sort(
-      (a, b) =>
-          a.title
-              .toLowerCase()
-              .compareTo(
-                b.title
-                    .toLowerCase(),
-              ),
-    );
-
-    return groups;
   }
 
   // ============================================================
   // MESSAGES
+  //
+  // Este método continua aqui porque
+  // TelegramMessagesWorker cria sua própria
+  // instância de TelegramService dentro do
+  // isolate e utiliza este parser.
   // ============================================================
 
   Future<List<TelegramMessage>>
@@ -970,7 +728,7 @@ class TelegramService {
   }
 
   // ============================================================
-  // MEDIA
+  // MEDIA PARSING
   // ============================================================
 
   TelegramMedia? _extractMedia(
@@ -1407,544 +1165,6 @@ class TelegramService {
   }
 
   // ============================================================
-  // DOWNLOAD
-  // ============================================================
-
-  Future<String> downloadMedia(
-    TelegramMedia media, {
-    required String groupTitle,
-    void Function(
-      int received,
-      int total,
-    )?
-        onProgress,
-  }) async {
-    final directory =
-        await _getDownloadDirectory(
-      groupTitle,
-    );
-
-    final fileName =
-        _sanitizeFileName(
-      media.fileName,
-    );
-
-    final destination =
-        File(
-      p.join(
-        directory.path,
-        fileName,
-      ),
-    );
-
-    return _downloadLocation(
-      dcId:
-          media.dcId,
-      location:
-          media.location,
-      destination:
-          destination,
-      expectedSize:
-          media.size,
-      onProgress:
-          onProgress,
-    );
-  }
-
-  Future<String> downloadPreview(
-    TelegramMedia media,
-  ) async {
-    final location =
-        media.previewLocation;
-
-    if (location == null) {
-      throw StateError(
-        'Preview não disponível.',
-      );
-    }
-
-    final directory =
-        await _getCacheDirectory();
-
-    final destination =
-        File(
-      p.join(
-        directory.path,
-        '${_sanitizeFileName(media.cacheKey)}.jpg',
-      ),
-    );
-
-    return _downloadLocation(
-      dcId:
-          media.dcId,
-      location:
-          location,
-      destination:
-          destination,
-      expectedSize:
-          media.previewSize ??
-              0,
-    );
-  }
-
-  Future<String> _downloadLocation({
-    required int dcId,
-    required t.InputFileLocationBase
-        location,
-    required File destination,
-    required int expectedSize,
-    void Function(
-      int received,
-      int total,
-    )?
-        onProgress,
-  }) async {
-    /*
-     * Agora escolhemos a conexão do DC da mídia
-     * ANTES do primeiro upload.getFile().
-     */
-    tg.Client downloadClient =
-        await _telegramClient
-            .getClientForDataCenter(
-      dcId,
-    );
-
-    int activeDcId =
-        dcId;
-
-    await destination.parent.create(
-      recursive:
-          true,
-    );
-
-    if (await destination.exists()) {
-      final currentSize =
-          await destination.length();
-
-      if (expectedSize <= 0 ||
-          currentSize ==
-              expectedSize) {
-        onProgress?.call(
-          currentSize,
-          expectedSize,
-        );
-
-        return destination.path;
-      }
-    }
-
-    final tempFile =
-        File(
-      '${destination.path}.part',
-    );
-
-    if (await tempFile.exists()) {
-      await tempFile.delete();
-    }
-
-    /*
-     * 512 KB é aceito pelo upload.getFile
-     * e evita uso desnecessário de memória.
-     */
-    const chunkSize =
-        512 * 1024;
-
-    int offset =
-        0;
-
-    int migrationCount =
-        0;
-
-    final output =
-        await tempFile.open(
-      mode:
-          FileMode.write,
-    );
-
-    try {
-      while (true) {
-        final response =
-            await downloadClient.upload
-                .getFile(
-          precise:
-              false,
-          cdnSupported:
-              false,
-          location:
-              location,
-          offset:
-              offset,
-          limit:
-              chunkSize,
-        );
-
-        if (response.error != null) {
-          final errorMessage =
-              response
-                  .error!
-                  .errorMessage;
-
-          /*
-           * Segurança extra:
-           *
-           * mesmo usando document.dcId, o Telegram
-           * pode informar outro DC.
-           *
-           * Nesse caso migramos SOMENTE o cliente
-           * de download e repetimos o mesmo chunk.
-           */
-          final migrateDcId =
-              _extractFileMigrationDc(
-            errorMessage,
-          );
-
-          if (migrateDcId != null) {
-            migrationCount++;
-
-            if (migrationCount > 3) {
-              throw Exception(
-                'Telegram solicitou muitas '
-                'migrações de Data Center '
-                'durante o download.',
-              );
-            }
-
-            activeDcId =
-                migrateDcId;
-
-            downloadClient =
-                await _telegramClient
-                    .getClientForDataCenter(
-              activeDcId,
-            );
-
-            /*
-             * NÃO incrementamos offset.
-             *
-             * Repetimos o mesmo trecho,
-             * agora no DC correto.
-             */
-            continue;
-          }
-
-          throw Exception(
-            errorMessage,
-          );
-        }
-
-        final dynamic result =
-            response.result;
-
-        if (result == null) {
-          throw Exception(
-            'Telegram não retornou dados '
-            'para o arquivo.',
-          );
-        }
-
-        Uint8List bytes;
-
-        try {
-          final dynamic rawBytes =
-              result.bytes;
-
-          if (rawBytes
-              is Uint8List) {
-            bytes =
-                rawBytes;
-          } else {
-            bytes =
-                Uint8List.fromList(
-              List<int>.from(
-                rawBytes as List,
-              ),
-            );
-          }
-        } catch (_) {
-          throw Exception(
-            'O Telegram retornou uma '
-            'resposta de arquivo não suportada.',
-          );
-        }
-
-        if (bytes.isEmpty) {
-          break;
-        }
-
-        await output.writeFrom(
-          bytes,
-        );
-
-        offset +=
-            bytes.length;
-
-        onProgress?.call(
-          offset,
-          expectedSize,
-        );
-
-        if (expectedSize > 0 &&
-            offset >=
-                expectedSize) {
-          break;
-        }
-
-        if (bytes.length <
-            chunkSize) {
-          break;
-        }
-      }
-    } finally {
-      await output.close();
-    }
-
-    if (expectedSize > 0) {
-      final downloadedSize =
-          await tempFile.length();
-
-      if (downloadedSize <
-          expectedSize) {
-        try {
-          await tempFile.delete();
-        } catch (_) {}
-
-        throw Exception(
-          'Download incompleto. '
-          'Esperado: $expectedSize bytes. '
-          'Recebido: $downloadedSize bytes. '
-          'Último DC: $activeDcId.',
-        );
-      }
-    }
-
-    if (await destination.exists()) {
-      await destination.delete();
-    }
-
-    final completed =
-        await tempFile.rename(
-      destination.path,
-    );
-
-    return completed.path;
-  }
-
-  int? _extractFileMigrationDc(
-    String errorMessage,
-  ) {
-    const prefixes =
-        [
-      'FILE_MIGRATE_',
-      'NETWORK_MIGRATE_',
-    ];
-
-    for (final prefix
-        in prefixes) {
-      if (!errorMessage.startsWith(
-        prefix,
-      )) {
-        continue;
-      }
-
-      return int.tryParse(
-        errorMessage
-            .substring(
-          prefix.length,
-        )
-            .trim(),
-      );
-    }
-
-    return null;
-  }
-
-  String? getDownloadedMediaPath(
-    TelegramMedia media, {
-    required String groupTitle,
-  }) {
-    try {
-      final userProfile =
-          Platform.environment[
-              'USERPROFILE'];
-
-      if (userProfile == null ||
-          userProfile.isEmpty) {
-        return null;
-      }
-
-      final directory =
-          Directory(
-        p.join(
-          userProfile,
-          'Downloads',
-          'Fabularium',
-          'Telegram',
-          _sanitizeFileName(
-            groupTitle,
-          ),
-        ),
-      );
-
-      final file =
-          File(
-        p.join(
-          directory.path,
-          _sanitizeFileName(
-            media.fileName,
-          ),
-        ),
-      );
-
-      if (!file.existsSync()) {
-        return null;
-      }
-
-      if (media.size > 0 &&
-          file.lengthSync() !=
-              media.size) {
-        return null;
-      }
-
-      return file.path;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<Directory>
-      _getDownloadDirectory(
-    String groupTitle,
-  ) async {
-    final userProfile =
-        Platform.environment[
-            'USERPROFILE'];
-
-    final basePath =
-        userProfile != null &&
-                userProfile.isNotEmpty
-            ? p.join(
-                userProfile,
-                'Downloads',
-              )
-            : Directory.current.path;
-
-    final directory =
-        Directory(
-      p.join(
-        basePath,
-        'Fabularium',
-        'Telegram',
-        _sanitizeFileName(
-          groupTitle,
-        ),
-      ),
-    );
-
-    await directory.create(
-      recursive:
-          true,
-    );
-
-    return directory;
-  }
-
-  Future<Directory>
-      _getCacheDirectory() async {
-    final localAppData =
-        Platform.environment[
-            'LOCALAPPDATA'];
-
-    final basePath =
-        localAppData != null &&
-                localAppData.isNotEmpty
-            ? localAppData
-            : Directory.systemTemp.path;
-
-    final directory =
-        Directory(
-      p.join(
-        basePath,
-        'Fabularium',
-        'Telegram',
-        'cache',
-      ),
-    );
-
-    await directory.create(
-      recursive:
-          true,
-    );
-
-    return directory;
-  }
-
-  String _sanitizeFileName(
-    String value,
-  ) {
-    String result =
-        value.replaceAll(
-      RegExp(
-        r'[<>:"/\\|?*\x00-\x1F]',
-      ),
-      '_',
-    );
-
-    result =
-        result.trim();
-
-    while (result.endsWith(
-          '.',
-        ) ||
-        result.endsWith(
-          ' ',
-        )) {
-      result =
-          result.substring(
-        0,
-        result.length - 1,
-      );
-    }
-
-    if (result.isEmpty) {
-      return 'telegram_file';
-    }
-
-    return result;
-  }
-
-  Future<void> showFileInExplorer(
-    String filePath,
-  ) async {
-    final file =
-        File(
-      filePath,
-    );
-
-    if (!await file.exists()) {
-      return;
-    }
-
-    if (Platform.isWindows) {
-      await Process.run(
-        'explorer.exe',
-        [
-          '/select,',
-          file.path,
-        ],
-      );
-
-      return;
-    }
-
-    await Process.run(
-      'xdg-open',
-      [
-        file.parent.path,
-      ],
-    );
-  }
-
-  // ============================================================
   // PEER
   // ============================================================
 
@@ -1987,14 +1207,7 @@ class TelegramService {
     await _telegramClient
         .disconnect();
 
-    _authSentCode =
-        null;
-
-    _accountPassword =
-        null;
-
-    _phoneNumber =
-        null;
+    _clearAuthTemporaryState();
 
     _setState(
       TelegramAuthState.disconnected,
@@ -2008,14 +1221,7 @@ class TelegramService {
     await _telegramClient
         .disconnect();
 
-    _authSentCode =
-        null;
-
-    _accountPassword =
-        null;
-
-    _phoneNumber =
-        null;
+    _clearAuthTemporaryState();
 
     _setState(
       TelegramAuthState.disconnected,

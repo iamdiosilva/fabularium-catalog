@@ -8,9 +8,9 @@ import '../models/telegram_group.dart';
 import '../models/telegram_media.dart';
 import '../models/telegram_message.dart';
 import '../services/download_queue_service.dart';
-import '../services/telegram_message_worker.dart';
-import '../services/telegram_preview_manger.dart';
-import '../services/telegram_service.dart';
+import '../services/telegram_file_service.dart';
+import '../services/telegram_messages_worker.dart';
+import '../services/telegram_preview_manager.dart';
 import '../widgets/download_queue_button.dart';
 
 class TelegramMessagesPage
@@ -56,11 +56,6 @@ class _TelegramMessagesPageState
   void initState() {
     super.initState();
 
-    /*
-     * Remove previews pendentes
-     * da tela anterior e prepara
-     * o novo grupo.
-     */
     _previewManager
         .prepareForScreen();
 
@@ -69,19 +64,8 @@ class _TelegramMessagesPageState
 
   @override
   void dispose() {
-    /*
-     * Qualquer resposta que chegar depois
-     * deste ponto será ignorada.
-     */
     _requestGeneration++;
 
-    /*
-     * Muito importante:
-     *
-     * não deixamos a fila de previews
-     * do grupo que acabou de ser fechado
-     * continuar consumindo recursos.
-     */
     _previewManager
         .cancelPending();
 
@@ -176,7 +160,6 @@ class _TelegramMessagesPageState
         ),
         actions: [
           const DownloadQueueButton(),
-
           IconButton(
             tooltip:
                 'Refresh Messages',
@@ -224,12 +207,10 @@ class _TelegramMessagesPageState
               MainAxisSize.min,
           children: [
             CircularProgressIndicator(),
-
             SizedBox(
               height:
                   16,
             ),
-
             Text(
               'Loading messages...',
             ),
@@ -257,12 +238,10 @@ class _TelegramMessagesPageState
                 size:
                     64,
               ),
-
               const SizedBox(
                 height:
                     16,
               ),
-
               Text(
                 'Error loading messages',
                 style:
@@ -270,23 +249,19 @@ class _TelegramMessagesPageState
                         .textTheme
                         .titleLarge,
               ),
-
               const SizedBox(
                 height:
                     12,
               ),
-
               Text(
                 _error!,
                 textAlign:
                     TextAlign.center,
               ),
-
               const SizedBox(
                 height:
                     20,
               ),
-
               FilledButton.icon(
                 onPressed:
                     () {
@@ -322,12 +297,10 @@ class _TelegramMessagesPageState
               size:
                   72,
             ),
-
             SizedBox(
               height:
                   16,
             ),
-
             Text(
               'No messages found.',
             ),
@@ -343,25 +316,17 @@ class _TelegramMessagesPageState
             minHeight:
                 2,
           ),
-
         Expanded(
           child:
               ListView.separated(
-            /*
-             * Evita construir muitos cards
-             * fora da área visível.
-             */
             cacheExtent:
                 200,
-
             padding:
                 const EdgeInsets.all(
               20,
             ),
-
             itemCount:
                 _messages.length,
-
             separatorBuilder:
                 (
               context,
@@ -371,7 +336,6 @@ class _TelegramMessagesPageState
               height:
                   12,
             ),
-
             itemBuilder:
                 (
               context,
@@ -432,7 +396,6 @@ class _MessageCard
             _buildHeader(
               context,
             ),
-
             if (message.text
                 .trim()
                 .isNotEmpty) ...[
@@ -440,19 +403,16 @@ class _MessageCard
                 height:
                     12,
               ),
-
               SelectableText(
                 message.text,
               ),
             ],
-
             if (message.media !=
                 null) ...[
               const SizedBox(
                 height:
                     14,
               ),
-
               TelegramMediaCard(
                 key:
                     ValueKey<String>(
@@ -481,12 +441,10 @@ class _MessageCard
           size:
               18,
         ),
-
         const SizedBox(
           width:
               8,
         ),
-
         Expanded(
           child:
               Text(
@@ -498,7 +456,6 @@ class _MessageCard
             ),
           ),
         ),
-
         if (message.date !=
             null)
           Text(
@@ -522,14 +479,13 @@ class _MessageCard
 
     String twoDigits(
       int value,
-    ) {
-      return value
-          .toString()
-          .padLeft(
-            2,
-            '0',
-          );
-    }
+    ) =>
+        value
+            .toString()
+            .padLeft(
+              2,
+              '0',
+            );
 
     return '${twoDigits(local.day)}/'
         '${twoDigits(local.month)}/'
@@ -559,8 +515,8 @@ class TelegramMediaCard
 
 class _TelegramMediaCardState
     extends State<TelegramMediaCard> {
-  final TelegramService _telegram =
-      TelegramService.instance;
+  final TelegramFileService _files =
+      TelegramFileService.instance;
 
   final DownloadQueueService _queue =
       DownloadQueueService.instance;
@@ -650,12 +606,6 @@ class _TelegramMediaCardState
             false;
       });
     } on TelegramPreviewCancelledException {
-      /*
-       * A página foi fechada ou outra tela
-       * substituiu essa fila.
-       *
-       * Não tratamos como erro visual.
-       */
       if (!mounted) {
         return;
       }
@@ -740,28 +690,23 @@ class _TelegramMediaCardState
                 _buildPreview(
                   context,
                 ),
-
               if (widget.media.hasPreview)
                 const SizedBox(
                   height:
                       14,
                 ),
-
               _buildFileInfo(
                 context,
               ),
-
               if (task != null)
                 _buildTaskStatus(
                   context,
                   task,
                 ),
-
               const SizedBox(
                 height:
                     14,
               ),
-
               _buildAction(
                 task,
                 downloadedPath,
@@ -789,12 +734,10 @@ class _TelegramMediaCardState
           size:
               30,
         ),
-
         const SizedBox(
           width:
               12,
         ),
-
         Expanded(
           child:
               Column(
@@ -813,12 +756,10 @@ class _TelegramMediaCardState
                       FontWeight.bold,
                 ),
               ),
-
               const SizedBox(
                 height:
                     4,
               ),
-
               Text(
                 _formatSize(
                   media.size,
@@ -828,7 +769,6 @@ class _TelegramMediaCardState
                         .textTheme
                         .bodySmall,
               ),
-
               if (media.mimeType.isNotEmpty)
                 Text(
                   media.mimeType,
@@ -863,12 +803,10 @@ class _TelegramMediaCardState
               size:
                   18,
             ),
-
             SizedBox(
               width:
                   8,
             ),
-
             Text(
               'Waiting in download queue',
             ),
@@ -893,12 +831,10 @@ class _TelegramMediaCardState
               value:
                   task.progress,
             ),
-
             const SizedBox(
               height:
                   6,
             ),
-
             Text(
               task.progress ==
                       null
@@ -952,12 +888,10 @@ class _TelegramMediaCardState
               size:
                   18,
             ),
-
             SizedBox(
               width:
                   8,
             ),
-
             Text(
               'Download completed',
             ),
@@ -978,7 +912,7 @@ class _TelegramMediaCardState
       return FilledButton.icon(
         onPressed:
             () {
-          _telegram.showFileInExplorer(
+          _files.showFileInExplorer(
             downloadedPath,
           );
         },
@@ -1179,12 +1113,10 @@ class _TelegramMediaCardState
             size:
                 36,
           ),
-
           const SizedBox(
             height:
                 8,
           ),
-
           Text(
             text,
           ),

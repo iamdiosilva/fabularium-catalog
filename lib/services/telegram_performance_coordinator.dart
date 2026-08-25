@@ -53,13 +53,6 @@ class TelegramPerformanceCoordinator
     _interactive =
         value;
 
-    /*
-     * Não inicia o worker se ele ainda
-     * não existir.
-     *
-     * O TelegramDownloadWorker apenas guarda
-     * o estado e o aplica quando iniciar.
-     */
     TelegramDownloadWorker.instance
         .setInteractiveMode(
       value,

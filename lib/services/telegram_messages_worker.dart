@@ -52,10 +52,6 @@ class TelegramMessagesWorker {
     seconds: 20,
   );
 
-  // ============================================================
-  // PUBLIC
-  // ============================================================
-
   Future<List<TelegramMessage>> getMessages(
     TelegramGroup group, {
     int limit = 50,
@@ -133,10 +129,6 @@ class TelegramMessagesWorker {
     _cache.clear();
   }
 
-  // ============================================================
-  // EXECUTE
-  // ============================================================
-
   Future<List<TelegramMessage>> _execute({
     required TelegramGroup group,
     required int limit,
@@ -184,16 +176,6 @@ class TelegramMessagesWorker {
             _requestTimeout,
           ),
         );
-
-        /*
-         * IMPORTANTE:
-         *
-         * NÃO matamos o isolate.
-         * NÃO fechamos o socket.
-         *
-         * Apenas abandonamos essa resposta
-         * específica.
-         */
       },
     );
 
@@ -220,10 +202,6 @@ class TelegramMessagesWorker {
 
     return completer.future;
   }
-
-  // ============================================================
-  // START WORKER
-  // ============================================================
 
   Future<void> _ensureStarted() {
     if (_commandPort != null) {
@@ -345,10 +323,6 @@ class TelegramMessagesWorker {
     }
   }
 
-  // ============================================================
-  // EVENTS
-  // ============================================================
-
   void _handleEvent(
     dynamic rawMessage,
   ) {
@@ -407,12 +381,6 @@ class TelegramMessagesWorker {
       requestId,
     );
 
-    /*
-     * Pode ter acontecido timeout.
-     *
-     * Nesse caso simplesmente ignoramos
-     * a resposta tardia.
-     */
     if (pending == null) {
       return;
     }
@@ -512,10 +480,6 @@ class TelegramMessagesWorker {
         ':${group.id}';
   }
 
-  // ============================================================
-  // APP SHUTDOWN ONLY
-  // ============================================================
-
   Future<void> dispose() async {
     if (_disposed) {
       return;
@@ -531,10 +495,6 @@ class TelegramMessagesWorker {
       },
     );
 
-    /*
-     * Esse dispose é para o encerramento
-     * do aplicativo, NÃO para navegação.
-     */
     await Future<void>.delayed(
       const Duration(
         milliseconds: 250,
@@ -598,10 +558,6 @@ class _PendingMessagesRequest {
   });
 }
 
-// ============================================================
-// ISOLATE
-// ============================================================
-
 @pragma(
   'vm:entry-point',
 )
@@ -616,12 +572,6 @@ Future<void>
       TelegramClient.instance;
 
   try {
-    /*
-     * CONECTA UMA ÚNICA VEZ.
-     *
-     * Abrir/fechar páginas não interfere
-     * mais nesta conexão.
-     */
     await telegramClient.connect();
 
     eventPort.send(
@@ -670,12 +620,6 @@ Future<void>
         continue;
       }
 
-      /*
-       * IMPORTANTE:
-       *
-       * Um erro de UMA requisição não mata
-       * o worker inteiro.
-       */
       try {
         final messages =
             await TelegramService
@@ -718,10 +662,6 @@ Future<void>
     error,
     stackTrace
   ) {
-    /*
-     * Somente erro da conexão/worker em si
-     * é fatal.
-     */
     eventPort.send(
       <String, dynamic>{
         'type':

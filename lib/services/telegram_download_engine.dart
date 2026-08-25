@@ -2,11 +2,11 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:path/path.dart' as p;
 import 'package:t/t.dart' as t;
 
 import '../models/telegram_media.dart';
 import 'telegram_client.dart';
+import 'telegram_file_service.dart';
 
 class TelegramDownloadEngine {
   TelegramDownloadEngine._();
@@ -16,6 +16,9 @@ class TelegramDownloadEngine {
 
   final TelegramClient _telegramClient =
       TelegramClient.instance;
+
+  final TelegramFileService _files =
+      TelegramFileService.instance;
 
   static const int _chunkSize =
       1024 * 1024;
@@ -44,19 +47,11 @@ class TelegramDownloadEngine {
     int Function()? maxInFlightProvider,
     Duration Function()? yieldDelayProvider,
   }) async {
-    final directory =
-        await _getDownloadDirectory(
-      groupTitle,
-    );
-
     final destination =
-        File(
-      p.join(
-        directory.path,
-        _sanitizeFileName(
-          media.fileName,
-        ),
-      ),
+        _files.downloadFile(
+      media,
+      groupTitle:
+          groupTitle,
     );
 
     return _downloadLargeLocation(
@@ -94,15 +89,9 @@ class TelegramDownloadEngine {
       );
     }
 
-    final directory =
-        await _getCacheDirectory();
-
     final destination =
-        File(
-      p.join(
-        directory.path,
-        '${_sanitizeFileName(media.cacheKey)}.jpg',
-      ),
+        _files.previewFile(
+      media,
     );
 
     return _downloadSmallLocation(
@@ -166,13 +155,6 @@ class TelegramDownloadEngine {
       await tempFile.delete();
     }
 
-    /*
-     * Continuamos mantendo quatro conexões
-     * prontas.
-     *
-     * O modo interativo apenas reduz a
-     * quantidade simultaneamente utilizada.
-     */
     await _telegramClient
         .warmDownloadPool(
       initialDcId,
@@ -334,12 +316,6 @@ class TelegramDownloadEngine {
           );
         }
 
-        /*
-         * Durante navegação damos um pequeno
-         * espaço para o scheduler distribuir
-         * CPU para os outros isolates e para
-         * o Flutter/Raster.
-         */
         final yieldDelay =
             yieldDelayProvider
                     ?.call() ??
@@ -352,14 +328,6 @@ class TelegramDownloadEngine {
           );
         }
 
-        /*
-         * O valor é consultado novamente.
-         *
-         * Se o usuário começou a navegar,
-         * pode cair de 4 para 1 imediatamente.
-         *
-         * Se parou de navegar, volta para 4.
-         */
         fillWindow();
       }
 
@@ -749,113 +717,6 @@ class TelegramDownloadEngine {
     }
 
     return null;
-  }
-
-  // ============================================================
-  // DIRECTORIES
-  // ============================================================
-
-  Future<Directory> _getDownloadDirectory(
-    String groupTitle,
-  ) async {
-    final userProfile =
-        Platform.environment[
-            'USERPROFILE'];
-
-    final basePath =
-        userProfile !=
-                    null &&
-                userProfile
-                    .isNotEmpty
-            ? p.join(
-                userProfile,
-                'Downloads',
-              )
-            : Directory.current.path;
-
-    final directory =
-        Directory(
-      p.join(
-        basePath,
-        'Fabularium',
-        'Telegram',
-        _sanitizeFileName(
-          groupTitle,
-        ),
-      ),
-    );
-
-    await directory.create(
-      recursive:
-          true,
-    );
-
-    return directory;
-  }
-
-  Future<Directory> _getCacheDirectory() async {
-    final localAppData =
-        Platform.environment[
-            'LOCALAPPDATA'];
-
-    final basePath =
-        localAppData !=
-                    null &&
-                localAppData
-                    .isNotEmpty
-            ? localAppData
-            : Directory
-                .systemTemp.path;
-
-    final directory =
-        Directory(
-      p.join(
-        basePath,
-        'Fabularium',
-        'Telegram',
-        'cache',
-      ),
-    );
-
-    await directory.create(
-      recursive:
-          true,
-    );
-
-    return directory;
-  }
-
-  String _sanitizeFileName(
-    String value,
-  ) {
-    var result =
-        value.replaceAll(
-      RegExp(
-        r'[<>:"/\\|?*\x00-\x1F]',
-      ),
-      '_',
-    );
-
-    result =
-        result.trim();
-
-    while (result.endsWith(
-          '.',
-        ) ||
-        result.endsWith(
-          ' ',
-        )) {
-      result =
-          result.substring(
-        0,
-        result.length -
-            1,
-      );
-    }
-
-    return result.isEmpty
-        ? 'telegram_file'
-        : result;
   }
 }
 

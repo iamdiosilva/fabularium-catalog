@@ -1,12 +1,11 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
 import '../models/download_task.dart';
 import '../models/telegram_media.dart';
 import 'telegram_download_worker.dart';
-import 'telegram_service.dart';
+import 'telegram_file_service.dart';
 
 class DownloadQueueService
     extends ChangeNotifier {
@@ -15,8 +14,8 @@ class DownloadQueueService
   static final DownloadQueueService instance =
       DownloadQueueService._();
 
-  final TelegramService _telegram =
-      TelegramService.instance;
+  final TelegramFileService _files =
+      TelegramFileService.instance;
 
   final TelegramDownloadWorker
       _downloadWorker =
@@ -29,21 +28,10 @@ class DownloadQueueService
       _tasksById =
       {};
 
-  /*
-   * Cada arquivo possui seu próprio
-   * revision notifier.
-   *
-   * Um download não precisa mais
-   * reconstruir todos os TelegramMediaCards.
-   */
   final Map<String, ValueNotifier<int>>
       _taskRevisions =
       {};
 
-  /*
-   * Overlay global utiliza apenas
-   * esse notifier.
-   */
   final ValueNotifier<int>
       _progressRevision =
       ValueNotifier<int>(
@@ -245,15 +233,8 @@ class DownloadQueueService
       return existing;
     }
 
-    /*
-     * Essa consulta síncrona acontece somente
-     * quando o usuário efetivamente adiciona
-     * o download.
-     *
-     * Não acontece mais dentro do build().
-     */
     final downloadedPath =
-        _telegram
+        _files
             .getDownloadedMediaPath(
       media,
       groupTitle:
@@ -433,7 +414,7 @@ class DownloadQueueService
       return;
     }
 
-    await _telegram
+    await _files
         .showFileInExplorer(
       path,
     );
@@ -460,9 +441,6 @@ class DownloadQueueService
         DownloadTask?
             nextTask;
 
-        /*
-         * FIFO.
-         */
         for (final task
             in _tasks.reversed) {
           if (task.isQueued) {
@@ -528,12 +506,6 @@ class DownloadQueueService
         0;
 
     try {
-      /*
-       * IMPORTANTE:
-       *
-       * Agora todo o TelegramDownloadEngine
-       * roda dentro de outro isolate.
-       */
       final path =
           await _downloadWorker
               .downloadMedia(
@@ -677,10 +649,6 @@ class DownloadQueueService
     );
   }
 
-  // ============================================================
-  // NOTIFIERS
-  // ============================================================
-
   void _scheduleProgressNotification(
     DownloadTask task,
   ) {
@@ -737,12 +705,6 @@ class DownloadQueueService
 
     _pendingTaskNotifications.clear();
 
-    /*
-     * Somente overlay/resumo escutam isso.
-     *
-     * Não dispara rebuild global
-     * da página de mensagens.
-     */
     _progressRevision.value++;
   }
 
@@ -767,16 +729,6 @@ class DownloadQueueService
 
     _progressRevision.value++;
 
-    /*
-     * ChangeNotifier global agora é usado
-     * para mudanças estruturais:
-     *
-     * queued
-     * downloading
-     * completed
-     * failed
-     * add/remove
-     */
     notifyListeners();
   }
 
