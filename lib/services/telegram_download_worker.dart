@@ -5,23 +5,97 @@ import '../models/telegram_media.dart';
 import 'telegram_client.dart';
 import 'telegram_download_engine.dart';
 
+typedef TelegramDownloadSessionInvalidHandler =
+    FutureOr<void> Function(
+  String errorMessage,
+);
+
 class TelegramDownloadWorker {
-  TelegramDownloadWorker._();
+  TelegramDownloadWorker._() {
+    _downloadWorker =
+        _PersistentTelegramWorker(
+      mode:
+          _TelegramWorkerMode.download,
+      onSessionInvalid:
+          _handleWorkerSessionInvalid,
+    );
+
+    _previewWorker =
+        _PersistentTelegramWorker(
+      mode:
+          _TelegramWorkerMode.preview,
+      onSessionInvalid:
+          _handleWorkerSessionInvalid,
+    );
+  }
 
   static final TelegramDownloadWorker instance =
       TelegramDownloadWorker._();
 
-  final _PersistentTelegramWorker _downloadWorker =
-      _PersistentTelegramWorker(
-    mode:
-        _TelegramWorkerMode.download,
-  );
+  late final _PersistentTelegramWorker
+      _downloadWorker;
 
-  final _PersistentTelegramWorker _previewWorker =
-      _PersistentTelegramWorker(
-    mode:
-        _TelegramWorkerMode.preview,
-  );
+  late final _PersistentTelegramWorker
+      _previewWorker;
+
+  TelegramDownloadSessionInvalidHandler?
+      _sessionInvalidHandler;
+
+  bool _sessionInvalidNotified =
+      false;
+
+  // ============================================================
+  // SESSION INVALID HANDLER
+  // ============================================================
+
+  void setSessionInvalidHandler(
+    TelegramDownloadSessionInvalidHandler? handler,
+  ) {
+    _sessionInvalidHandler =
+        handler;
+  }
+
+  void _handleWorkerSessionInvalid(
+    String errorMessage,
+  ) {
+    /*
+     * Download e preview possuem isolates
+     * independentes.
+     *
+     * Se ambos perceberem a sessão inválida
+     * aproximadamente ao mesmo tempo,
+     * notificamos o lifecycle somente uma vez.
+     */
+    if (_sessionInvalidNotified) {
+      return;
+    }
+
+    _sessionInvalidNotified =
+        true;
+
+    final handler =
+        _sessionInvalidHandler;
+
+    if (handler == null) {
+      return;
+    }
+
+    unawaited(
+      Future<void>(
+        () async {
+          try {
+            await handler(
+              errorMessage,
+            );
+          } catch (_) {}
+        },
+      ),
+    );
+  }
+
+  // ============================================================
+  // DOWNLOAD
+  // ============================================================
 
   Future<String> downloadMedia(
     TelegramMedia media, {
@@ -44,6 +118,10 @@ class TelegramDownloadWorker {
     );
   }
 
+  // ============================================================
+  // PREVIEW
+  // ============================================================
+
   Future<String> downloadPreview(
     TelegramMedia media,
   ) {
@@ -55,6 +133,10 @@ class TelegramDownloadWorker {
     );
   }
 
+  // ============================================================
+  // PERFORMANCE
+  // ============================================================
+
   void setInteractiveMode(
     bool interactive,
   ) {
@@ -63,6 +145,10 @@ class TelegramDownloadWorker {
       interactive,
     );
   }
+
+  // ============================================================
+  // SESSION RESET
+  // ============================================================
 
   /*
    * Encerra download + preview da sessão atual,
@@ -77,19 +163,38 @@ class TelegramDownloadWorker {
       'Telegram session reset.',
     );
 
-    await Future.wait(
-      [
-        _downloadWorker.reset(
-          reason,
-        ),
-        _previewWorker.reset(
-          reason,
-        ),
-      ],
-    );
+    try {
+      await Future.wait(
+        [
+          _downloadWorker.reset(
+            reason,
+          ),
+          _previewWorker.reset(
+            reason,
+          ),
+        ],
+      );
+    } finally {
+      /*
+       * Uma nova sessão poderá ser criada depois
+       * deste reset.
+       *
+       * Portanto permitimos que uma futura
+       * invalidação seja reportada novamente.
+       */
+      _sessionInvalidNotified =
+          false;
+    }
   }
 
+  // ============================================================
+  // DISPOSE
+  // ============================================================
+
   Future<void> dispose() async {
+    _sessionInvalidHandler =
+        null;
+
     await Future.wait(
       [
         _downloadWorker.dispose(),
@@ -107,8 +212,13 @@ enum _TelegramWorkerMode {
 class _PersistentTelegramWorker {
   final _TelegramWorkerMode mode;
 
+  final void Function(
+    String errorMessage,
+  ) onSessionInvalid;
+
   _PersistentTelegramWorker({
     required this.mode,
+    required this.onSessionInvalid,
   });
 
   Isolate? _isolate;
@@ -146,6 +256,10 @@ class _PersistentTelegramWorker {
   bool _interactiveMode =
       false;
 
+  // ============================================================
+  // INTERACTIVE MODE
+  // ============================================================
+
   void setInteractiveMode(
     bool value,
   ) {
@@ -174,6 +288,10 @@ class _PersistentTelegramWorker {
       },
     );
   }
+
+  // ============================================================
+  // EXECUTE
+  // ============================================================
 
   Future<String> execute({
     required String type,
@@ -233,6 +351,10 @@ class _PersistentTelegramWorker {
     return completer.future;
   }
 
+  // ============================================================
+  // START
+  // ============================================================
+
   Future<void> _ensureStarted() async {
     if (_disposed) {
       throw StateError(
@@ -259,6 +381,7 @@ class _PersistentTelegramWorker {
     if (existing !=
         null) {
       await existing;
+
       return;
     }
 
@@ -329,6 +452,16 @@ class _PersistentTelegramWorker {
             error.isNotEmpty) {
           message =
               error.first.toString();
+        }
+
+        if (_isInvalidTelegramSessionError(
+          message,
+        )) {
+          _handleInvalidSession(
+            message,
+          );
+
+          return;
         }
 
         final exception =
@@ -416,6 +549,10 @@ class _PersistentTelegramWorker {
     }
   }
 
+  // ============================================================
+  // EVENTS
+  // ============================================================
+
   void _handleEvent(
     dynamic rawMessage,
   ) {
@@ -475,14 +612,32 @@ class _PersistentTelegramWorker {
         return;
       }
 
+      final errorMessage =
+          message['error']
+                  ?.toString() ??
+              'Fatal Telegram worker error.';
+
+      final stackTrace =
+          message['stackTrace']
+              ?.toString();
+
+      if (_isInvalidTelegramSessionError(
+        errorMessage,
+      )) {
+        _handleInvalidSession(
+          errorMessage,
+          stackTrace:
+              stackTrace,
+        );
+
+        return;
+      }
+
       final error =
           TelegramDownloadWorkerException(
-        message['error']
-                ?.toString() ??
-            'Fatal Telegram worker error.',
+        errorMessage,
         stackTrace:
-            message['stackTrace']
-                ?.toString(),
+            stackTrace,
       );
 
       final readyCompleter =
@@ -572,6 +727,32 @@ class _PersistentTelegramWorker {
 
     if (type ==
         'error') {
+      final errorMessage =
+          message['error']
+                  ?.toString() ??
+              'Unknown Telegram worker error.';
+
+      final stackTrace =
+          message['stackTrace']
+              ?.toString();
+
+      if (_isInvalidTelegramSessionError(
+        errorMessage,
+      )) {
+        /*
+         * _handleInvalidSession chama _failAll(),
+         * portanto também finaliza a requisição
+         * atual com o erro correto.
+         */
+        _handleInvalidSession(
+          errorMessage,
+          stackTrace:
+              stackTrace,
+        );
+
+        return;
+      }
+
       _pending.remove(
         requestId,
       );
@@ -581,17 +762,77 @@ class _PersistentTelegramWorker {
           .isCompleted) {
         pending.completer.completeError(
           TelegramDownloadWorkerException(
-            message['error']
-                    ?.toString() ??
-                'Unknown Telegram worker error.',
+            errorMessage,
             stackTrace:
-                message['stackTrace']
-                    ?.toString(),
+                stackTrace,
           ),
         );
       }
     }
   }
+
+  // ============================================================
+  // INVALID SESSION
+  // ============================================================
+
+  void _handleInvalidSession(
+    String errorMessage, {
+    String? stackTrace,
+  }) {
+    if (_disposed) {
+      return;
+    }
+
+    final exception =
+        TelegramDownloadSessionInvalidException(
+      errorMessage,
+      stackTrace:
+          stackTrace,
+    );
+
+    final ready =
+        _readyCompleter;
+
+    if (ready != null &&
+        !ready.isCompleted) {
+      ready.completeError(
+        exception,
+      );
+    }
+
+    /*
+     * Falha imediatamente qualquer download
+     * ou preview pendente deste worker.
+     */
+    _failAll(
+      exception,
+    );
+
+    /*
+     * Coloca este worker em reset imediatamente,
+     * evitando que uma nova operação utilize a
+     * mesma sessão inválida enquanto o lifecycle
+     * principal está encerrando a sessão.
+     */
+    unawaited(
+      reset(
+        exception,
+      ),
+    );
+
+    /*
+     * A callback chega ao TelegramDownloadWorker,
+     * que faz dedupe entre Download e Preview
+     * antes de avisar TelegramSessionLifecycle.
+     */
+    onSessionInvalid(
+      errorMessage,
+    );
+  }
+
+  // ============================================================
+  // PENDING
+  // ============================================================
 
   void _failAll(
     Object error,
@@ -612,6 +853,10 @@ class _PersistentTelegramWorker {
       }
     }
   }
+
+  // ============================================================
+  // RESET
+  // ============================================================
 
   Future<void> reset(
     Object reason,
@@ -735,6 +980,10 @@ class _PersistentTelegramWorker {
     exitPort?.close();
   }
 
+  // ============================================================
+  // DISPOSE
+  // ============================================================
+
   Future<void> dispose() async {
     if (_disposed) {
       return;
@@ -781,6 +1030,31 @@ class TelegramDownloadWorkerException
   @override
   String toString() =>
       message;
+}
+
+class TelegramDownloadSessionInvalidException
+    extends TelegramDownloadWorkerException {
+  const TelegramDownloadSessionInvalidException(
+    super.message, {
+    super.stackTrace,
+  });
+}
+
+bool _isInvalidTelegramSessionError(
+  String message,
+) {
+  return message.contains(
+        'AUTH_KEY_UNREGISTERED',
+      ) ||
+      message.contains(
+        'AUTH_KEY_INVALID',
+      ) ||
+      message.contains(
+        'SESSION_REVOKED',
+      ) ||
+      message.contains(
+        'SESSION_EXPIRED',
+      );
 }
 
 class _DownloadRuntimePolicy {

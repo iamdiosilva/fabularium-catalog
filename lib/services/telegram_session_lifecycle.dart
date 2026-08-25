@@ -9,14 +9,26 @@ import 'telegram_service.dart';
 class TelegramSessionLifecycle {
   TelegramSessionLifecycle._() {
     /*
-     * O callback é registrado no MAIN ISOLATE.
+     * Todos os workers reportam uma sessão
+     * inválida para o MAIN ISOLATE.
      *
-     * Quando o BrowseWorker detectar que a
-     * autorização foi revogada/expirada,
-     * ele avisa este lifecycle.
+     * Independentemente de o erro aparecer
+     * durante:
+     *
+     * - grupos;
+     * - mensagens;
+     * - download;
+     * - preview.
+     *
+     * todos convergem para o mesmo fluxo
+     * de encerramento da sessão.
      */
     _browseWorker.setSessionInvalidHandler(
-      _handleBrowseSessionInvalid,
+      _handleSessionInvalid,
+    );
+
+    _downloadWorker.setSessionInvalidHandler(
+      _handleSessionInvalid,
     );
   }
 
@@ -46,7 +58,7 @@ class TelegramSessionLifecycle {
   // INVALID SESSION
   // ============================================================
 
-  Future<void> _handleBrowseSessionInvalid(
+  Future<void> _handleSessionInvalid(
     String errorMessage,
   ) {
     return invalidateSession(
@@ -57,6 +69,13 @@ class TelegramSessionLifecycle {
   Future<void> invalidateSession(
     String errorMessage,
   ) {
+    /*
+     * Browse, Download e Preview podem
+     * perceber a mesma invalidação quase
+     * simultaneamente.
+     *
+     * Este Future funciona como dedupe global.
+     */
     final existing =
         _invalidSessionFuture;
 
@@ -91,27 +110,24 @@ class TelegramSessionLifecycle {
     String errorMessage,
   ) async {
     /*
-     * Primeiro atualizamos a sessão principal.
+     * Primeiro atualizamos a sessão do
+     * MAIN ISOLATE.
      *
-     * Isso faz TelegramService.state mudar
-     * imediatamente para disconnected e
-     * notifica a TelegramLoginPage pelo
-     * stateStream.
+     * TelegramService muda para disconnected
+     * e notifica automaticamente qualquer
+     * tela ouvindo stateStream.
      *
-     * TelegramService.logout() aqui NÃO envia
-     * auth.logOut para o Telegram.
-     *
-     * Ele somente apaga nossa sessão local,
-     * fecha eventual conexão local e atualiza
-     * o estado do aplicativo.
+     * logout() aqui somente encerra nossa
+     * sessão local. Não executa auth.logOut
+     * remoto.
      */
     try {
       await _telegram.logout();
     } catch (_) {
       /*
-       * Mesmo se a limpeza local apresentar
-       * algum problema, ainda precisamos
-       * derrubar todos os workers.
+       * Mesmo se houver problema apagando
+       * a sessão local, os workers ainda
+       * precisam ser encerrados.
        */
     }
 
@@ -166,23 +182,22 @@ class TelegramSessionLifecycle {
     required Object reason,
   }) async {
     /*
-     * Invalida imediatamente previews da tela atual
-     * e limpa somente o cache em memória.
+     * Invalida imediatamente previews da tela
+     * atual e limpa somente o cache em memória.
      *
-     * O cache físico e arquivos já baixados
-     * continuam no disco.
+     * Arquivos físicos e downloads já concluídos
+     * permanecem no disco.
      */
     _previewManager.cancelPending();
 
     _previewManager.clearMemoryCache();
 
     /*
-     * Remove da fila tudo que não está efetivamente
-     * executando.
+     * Remove tarefas que ainda não estão
+     * efetivamente executando.
      *
      * Isso impede o queue processor de iniciar
-     * o próximo arquivo quando o download atual
-     * for cancelado pelo reset do worker.
+     * outro arquivo enquanto encerramos a sessão.
      */
     _removeNonRunningDownloadTasks();
 
@@ -208,12 +223,12 @@ class TelegramSessionLifecycle {
     }
 
     /*
-     * O Future do download ativo recebe erro quando
-     * o worker é resetado.
+     * O Future do download que estava executando
+     * recebe erro quando o worker é resetado.
      *
-     * Cedemos alguns ciclos para
-     * DownloadQueueService atualizar o task
-     * para failed.
+     * Cedemos dois ciclos para
+     * DownloadQueueService atualizar o estado
+     * da tarefa antes da limpeza final.
      */
     await Future<void>.delayed(
       Duration.zero,
@@ -225,6 +240,10 @@ class TelegramSessionLifecycle {
 
     _removeNonRunningDownloadTasks();
   }
+
+  // ============================================================
+  // DOWNLOAD QUEUE
+  // ============================================================
 
   void _removeNonRunningDownloadTasks() {
     final tasks =
