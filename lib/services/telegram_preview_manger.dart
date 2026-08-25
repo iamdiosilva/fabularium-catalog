@@ -12,65 +12,30 @@ class TelegramPreviewManager {
   final TelegramDownloadWorker _worker =
       TelegramDownloadWorker.instance;
 
-  /*
-   * Preview que já foi obtido durante
-   * esta execução do aplicativo.
-   *
-   * key = TelegramMedia.cacheKey
-   */
-  final Map<String, String> _memoryCache = {};
+  final Map<String, String> _memoryCache =
+      {};
 
-  /*
-   * Evita isto:
-   *
-   * card antigo pede preview A
-   * card novo pede preview A
-   * outro card pede preview A
-   *
-   * e termos 3 downloads iguais.
-   *
-   * Todos recebem o MESMO Future.
-   */
-  final Map<String, Future<String>> _inFlight = {};
+  final Map<String, Future<String>> _inFlight =
+      {};
 
-  final List<_PreviewRequest> _queue = [];
+  final List<_PreviewRequest> _queue =
+      [];
 
-  bool _processing = false;
+  bool _processing =
+      false;
 
-  /*
-   * Pequeno atraso entre previews.
-   *
-   * Isso evita:
-   *
-   * preview termina
-   * decode
-   * setState
-   * preview termina
-   * decode
-   * setState
-   *
-   * tudo dentro do mesmo pequeno intervalo.
-   */
+  bool _needsInitialDelay =
+      true;
+
   static const Duration _betweenRequests =
       Duration(
-    milliseconds: 100,
+    milliseconds: 120,
   );
 
-  /*
-   * Quando entramos no Telegram esperamos
-   * um pouco antes de começar o primeiro
-   * preview.
-   *
-   * Assim a tela consegue desenhar seus
-   * primeiros frames sem competir com
-   * inicialização de imagens.
-   */
   static const Duration _initialDelay =
       Duration(
-    milliseconds: 350,
+    milliseconds: 400,
   );
-
-  bool _needsInitialDelay = true;
 
   String? cachedPath(
     TelegramMedia media,
@@ -85,12 +50,8 @@ class TelegramPreviewManager {
     final key =
         media.cacheKey;
 
-    /*
-     * Já temos em memória.
-     */
     final cached =
-        _memoryCache[
-            key];
+        _memoryCache[key];
 
     if (cached != null) {
       return Future<String>.value(
@@ -98,15 +59,8 @@ class TelegramPreviewManager {
       );
     }
 
-    /*
-     * Já existe uma solicitação desse
-     * mesmo preview.
-     *
-     * Reutilizamos o Future.
-     */
     final existing =
-        _inFlight[
-            key];
+        _inFlight[key];
 
     if (existing != null) {
       return existing;
@@ -118,8 +72,7 @@ class TelegramPreviewManager {
     final future =
         completer.future;
 
-    _inFlight[
-            key] =
+    _inFlight[key] =
         future;
 
     _queue.add(
@@ -153,16 +106,33 @@ class TelegramPreviewManager {
         true;
 
     try {
-      if (_needsInitialDelay) {
-        _needsInitialDelay =
-            false;
-
-        await Future<void>.delayed(
-          _initialDelay,
-        );
-      }
-
       while (_queue.isNotEmpty) {
+        /*
+         * O delay fica dentro do loop.
+         *
+         * Assim, se sairmos de uma tela e
+         * entrarmos em outra enquanto existe
+         * um preview anterior terminando,
+         * o novo grupo ainda ganha um tempo
+         * para desenhar antes dos previews.
+         */
+        if (_needsInitialDelay) {
+          _needsInitialDelay =
+              false;
+
+          await Future<void>.delayed(
+            _initialDelay,
+          );
+
+          /*
+           * A página pode ter sido fechada
+           * durante o delay.
+           */
+          if (_queue.isEmpty) {
+            break;
+          }
+        }
+
         final request =
             _queue.removeAt(
           0,
@@ -171,21 +141,14 @@ class TelegramPreviewManager {
         final key =
             request.media.cacheKey;
 
-        /*
-         * Pode ter entrado no cache enquanto
-         * aguardava na fila.
-         */
         final cached =
-            _memoryCache[
-                key];
+            _memoryCache[key];
 
         if (cached != null) {
           if (!request
               .completer
               .isCompleted) {
-            request
-                .completer
-                .complete(
+            request.completer.complete(
               cached,
             );
           }
@@ -198,26 +161,19 @@ class TelegramPreviewManager {
         }
 
         try {
-          /*
-           * Toda comunicação Telegram
-           * permanece fora do isolate da UI.
-           */
           final path =
               await _worker
                   .downloadPreview(
             request.media,
           );
 
-          _memoryCache[
-                  key] =
+          _memoryCache[key] =
               path;
 
           if (!request
               .completer
               .isCompleted) {
-            request
-                .completer
-                .complete(
+            request.completer.complete(
               path,
             );
           }
@@ -241,10 +197,6 @@ class TelegramPreviewManager {
           );
         }
 
-        /*
-         * Distribui as atualizações visuais
-         * no tempo.
-         */
         if (_queue.isNotEmpty) {
           await Future<void>.delayed(
             _betweenRequests,
@@ -255,11 +207,6 @@ class TelegramPreviewManager {
       _processing =
           false;
 
-      /*
-       * Segurança para uma solicitação que
-       * tenha entrado exatamente enquanto
-       * finalizávamos.
-       */
       if (_queue.isNotEmpty) {
         _startProcessing();
       }
@@ -267,29 +214,78 @@ class TelegramPreviewManager {
   }
 
   /*
-   * Podemos chamar ao entrar novamente em
-   * uma tela de Telegram.
+   * Chamar sempre que uma nova tela
+   * de mensagens for aberta.
    *
-   * Não apagamos o cache.
-   *
-   * Apenas fazemos o próximo conjunto
-   * aguardar um pouco antes de começar.
+   * Isso também descarta previews pendentes
+   * deixados pela tela anterior.
    */
   void prepareForScreen() {
-    if (!_processing &&
-        _queue.isEmpty) {
+    cancelPending(
+      resetInitialDelay:
+          false,
+    );
+
+    _needsInitialDelay =
+        true;
+  }
+
+  /*
+   * Cancela apenas os itens que ainda não
+   * começaram.
+   *
+   * O preview que já está sendo processado
+   * pode terminar normalmente.
+   *
+   * Resultado:
+   *
+   * ao fechar um grupo com 10 previews
+   * pendentes, não continuamos baixando
+   * os 10 depois que a tela desapareceu.
+   */
+  void cancelPending({
+    bool resetInitialDelay = true,
+  }) {
+    if (_queue.isEmpty) {
+      if (resetInitialDelay) {
+        _needsInitialDelay =
+            true;
+      }
+
+      return;
+    }
+
+    final pendingRequests =
+        List<_PreviewRequest>.from(
+      _queue,
+    );
+
+    _queue.clear();
+
+    for (final request
+        in pendingRequests) {
+      final key =
+          request.media.cacheKey;
+
+      _inFlight.remove(
+        key,
+      );
+
+      if (!request
+          .completer
+          .isCompleted) {
+        request.completer.completeError(
+          const TelegramPreviewCancelledException(),
+        );
+      }
+    }
+
+    if (resetInitialDelay) {
       _needsInitialDelay =
           true;
     }
   }
 
-  /*
-   * Útil posteriormente caso queiramos
-   * limpar manualmente o cache em memória.
-   *
-   * Os arquivos físicos continuam no
-   * cache do Telegram.
-   */
   void clearMemoryCache() {
     _memoryCache.clear();
   }
@@ -305,4 +301,13 @@ class _PreviewRequest {
     required this.media,
     required this.completer,
   });
+}
+
+class TelegramPreviewCancelledException
+    implements Exception {
+  const TelegramPreviewCancelledException();
+
+  @override
+  String toString() =>
+      'Preview cancelled.';
 }

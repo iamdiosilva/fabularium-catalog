@@ -8,6 +8,7 @@ import '../models/telegram_group.dart';
 import '../models/telegram_media.dart';
 import '../models/telegram_message.dart';
 import '../services/download_queue_service.dart';
+import '../services/telegram_message_worker.dart';
 import '../services/telegram_preview_manger.dart';
 import '../services/telegram_service.dart';
 import '../widgets/download_queue_button.dart';
@@ -29,8 +30,9 @@ class TelegramMessagesPage
 
 class _TelegramMessagesPageState
     extends State<TelegramMessagesPage> {
-  final TelegramService _telegram =
-      TelegramService.instance;
+  final TelegramMessagesWorker
+      _messagesWorker =
+      TelegramMessagesWorker.instance;
 
   final TelegramPreviewManager
       _previewManager =
@@ -39,18 +41,25 @@ class _TelegramMessagesPageState
   bool _isLoading =
       true;
 
+  bool _isRefreshing =
+      false;
+
   String? _error;
 
   List<TelegramMessage> _messages =
       [];
+
+  int _requestGeneration =
+      0;
 
   @override
   void initState() {
     super.initState();
 
     /*
-     * Faz os previews aguardarem o primeiro
-     * desenho da tela.
+     * Remove previews pendentes
+     * da tela anterior e prepara
+     * o novo grupo.
      */
     _previewManager
         .prepareForScreen();
@@ -58,25 +67,66 @@ class _TelegramMessagesPageState
     _loadMessages();
   }
 
-  Future<void> _loadMessages() async {
-    setState(() {
-      _isLoading =
-          true;
+  @override
+  void dispose() {
+    /*
+     * Qualquer resposta que chegar depois
+     * deste ponto será ignorada.
+     */
+    _requestGeneration++;
 
-      _error =
-          null;
-    });
+    /*
+     * Muito importante:
+     *
+     * não deixamos a fila de previews
+     * do grupo que acabou de ser fechado
+     * continuar consumindo recursos.
+     */
+    _previewManager
+        .cancelPending();
+
+    super.dispose();
+  }
+
+  Future<void> _loadMessages({
+    bool forceRefresh = false,
+  }) async {
+    final generation =
+        ++_requestGeneration;
+
+    if (forceRefresh &&
+        _messages.isNotEmpty) {
+      setState(() {
+        _isRefreshing =
+            true;
+
+        _error =
+            null;
+      });
+    } else {
+      setState(() {
+        _isLoading =
+            true;
+
+        _error =
+            null;
+      });
+    }
 
     try {
       final messages =
-          await _telegram
+          await _messagesWorker
               .getMessages(
         widget.group,
         limit:
             50,
+        forceRefresh:
+            forceRefresh,
       );
 
-      if (!mounted) {
+      if (!mounted ||
+          generation !=
+              _requestGeneration) {
         return;
       }
 
@@ -86,9 +136,17 @@ class _TelegramMessagesPageState
 
         _isLoading =
             false;
+
+        _isRefreshing =
+            false;
+
+        _error =
+            null;
       });
     } catch (e) {
-      if (!mounted) {
+      if (!mounted ||
+          generation !=
+              _requestGeneration) {
         return;
       }
 
@@ -97,6 +155,9 @@ class _TelegramMessagesPageState
             e.toString();
 
         _isLoading =
+            false;
+
+        _isRefreshing =
             false;
       });
     }
@@ -120,13 +181,31 @@ class _TelegramMessagesPageState
             tooltip:
                 'Refresh Messages',
             onPressed:
-                _isLoading
+                _isLoading ||
+                        _isRefreshing
                     ? null
-                    : _loadMessages,
+                    : () {
+                        _loadMessages(
+                          forceRefresh:
+                              true,
+                        );
+                      },
             icon:
-                const Icon(
-              Icons.refresh,
-            ),
+                _isRefreshing
+                    ? const SizedBox(
+                        width:
+                            18,
+                        height:
+                            18,
+                        child:
+                            CircularProgressIndicator(
+                          strokeWidth:
+                              2,
+                        ),
+                      )
+                    : const Icon(
+                        Icons.refresh,
+                      ),
           ),
         ],
       ),
@@ -136,14 +215,31 @@ class _TelegramMessagesPageState
   }
 
   Widget _buildBody() {
-    if (_isLoading) {
+    if (_isLoading &&
+        _messages.isEmpty) {
       return const Center(
         child:
+            Column(
+          mainAxisSize:
+              MainAxisSize.min,
+          children: [
             CircularProgressIndicator(),
+
+            SizedBox(
+              height:
+                  16,
+            ),
+
+            Text(
+              'Loading messages...',
+            ),
+          ],
+        ),
       );
     }
 
-    if (_error != null) {
+    if (_error != null &&
+        _messages.isEmpty) {
       return Center(
         child:
             Padding(
@@ -193,7 +289,12 @@ class _TelegramMessagesPageState
 
               FilledButton.icon(
                 onPressed:
-                    _loadMessages,
+                    () {
+                  _loadMessages(
+                    forceRefresh:
+                        true,
+                  );
+                },
                 icon:
                     const Icon(
                   Icons.refresh,
@@ -217,15 +318,16 @@ class _TelegramMessagesPageState
               MainAxisSize.min,
           children: [
             Icon(
-              Icons
-                  .chat_bubble_outline,
+              Icons.chat_bubble_outline,
               size:
                   72,
             ),
+
             SizedBox(
               height:
                   16,
             ),
+
             Text(
               'No messages found.',
             ),
@@ -234,58 +336,67 @@ class _TelegramMessagesPageState
       );
     }
 
-    return ListView.separated(
-      /*
-       * Evita que o Flutter construa cards
-       * muito além da área visível.
-       */
-      cacheExtent:
-          250,
-
-      padding:
-          const EdgeInsets.all(
-        20,
-      ),
-
-      itemCount:
-          _messages.length,
-
-      separatorBuilder:
-          (
-        context,
-        index,
-      ) =>
-              const SizedBox(
-        height:
-            12,
-      ),
-
-      itemBuilder:
-          (
-        context,
-        index,
-      ) {
-        final message =
-            _messages[
-                index];
-
-        /*
-         * Isola o repaint de cada mensagem.
-         */
-        return RepaintBoundary(
-          child:
-              _MessageCard(
-            key:
-                ValueKey<int>(
-              message.id,
-            ),
-            message:
-                message,
-            groupTitle:
-                widget.group.title,
+    return Column(
+      children: [
+        if (_isRefreshing)
+          const LinearProgressIndicator(
+            minHeight:
+                2,
           ),
-        );
-      },
+
+        Expanded(
+          child:
+              ListView.separated(
+            /*
+             * Evita construir muitos cards
+             * fora da área visível.
+             */
+            cacheExtent:
+                200,
+
+            padding:
+                const EdgeInsets.all(
+              20,
+            ),
+
+            itemCount:
+                _messages.length,
+
+            separatorBuilder:
+                (
+              context,
+              index,
+            ) =>
+                    const SizedBox(
+              height:
+                  12,
+            ),
+
+            itemBuilder:
+                (
+              context,
+              index,
+            ) {
+              final message =
+                  _messages[index];
+
+              return RepaintBoundary(
+                child:
+                    _MessageCard(
+                  key:
+                      ValueKey<int>(
+                    message.id,
+                  ),
+                  message:
+                      message,
+                  groupTitle:
+                      widget.group.title,
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
@@ -388,7 +499,8 @@ class _MessageCard
           ),
         ),
 
-        if (message.date != null)
+        if (message.date !=
+            null)
           Text(
             _formatDate(
               message.date!,
@@ -477,22 +589,6 @@ class _TelegramMediaCardState
       widget.groupTitle,
     );
 
-    /*
-     * IMPORTANTE:
-     *
-     * Removemos daqui:
-     *
-     * getDownloadedMediaPath()
-     *
-     * porque esse método fazia:
-     *
-     * File.existsSync()
-     * File.lengthSync()
-     *
-     * no isolate da UI enquanto os cards
-     * estavam sendo construídos.
-     */
-
     if (widget.media.hasPreview) {
       final cached =
           _previewManager
@@ -504,10 +600,6 @@ class _TelegramMediaCardState
         _previewPath =
             cached;
       } else {
-        /*
-         * Deixamos o primeiro frame terminar
-         * antes de solicitar o preview.
-         */
         WidgetsBinding.instance
             .addPostFrameCallback(
           (_) {
@@ -557,6 +649,21 @@ class _TelegramMediaCardState
         _isLoadingPreview =
             false;
       });
+    } on TelegramPreviewCancelledException {
+      /*
+       * A página foi fechada ou outra tela
+       * substituiu essa fila.
+       *
+       * Não tratamos como erro visual.
+       */
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isLoadingPreview =
+            false;
+      });
     } catch (e) {
       if (!mounted) {
         return;
@@ -600,13 +707,6 @@ class _TelegramMediaCardState
           widget.groupTitle,
         );
 
-        /*
-         * Não consultamos o disco durante
-         * build().
-         *
-         * Se o arquivo foi baixado nesta
-         * sessão, a task conhece seu path.
-         */
         final downloadedPath =
             task?.filePath;
 
@@ -636,14 +736,12 @@ class _TelegramMediaCardState
             crossAxisAlignment:
                 CrossAxisAlignment.start,
             children: [
-              if (widget.media
-                  .hasPreview)
+              if (widget.media.hasPreview)
                 _buildPreview(
                   context,
                 ),
 
-              if (widget.media
-                  .hasPreview)
+              if (widget.media.hasPreview)
                 const SizedBox(
                   height:
                       14,
@@ -685,8 +783,7 @@ class _TelegramMediaCardState
       children: [
         Icon(
           media.isPhoto
-              ? Icons
-                  .image_outlined
+              ? Icons.image_outlined
               : Icons
                   .insert_drive_file_outlined,
           size:
@@ -732,8 +829,7 @@ class _TelegramMediaCardState
                         .bodySmall,
               ),
 
-              if (media.mimeType
-                  .isNotEmpty)
+              if (media.mimeType.isNotEmpty)
                 Text(
                   media.mimeType,
                   style:
@@ -767,10 +863,12 @@ class _TelegramMediaCardState
               size:
                   18,
             ),
+
             SizedBox(
               width:
                   8,
             ),
+
             Text(
               'Waiting in download queue',
             ),
@@ -850,15 +948,16 @@ class _TelegramMediaCardState
             Row(
           children: [
             Icon(
-              Icons
-                  .check_circle_outline,
+              Icons.check_circle_outline,
               size:
                   18,
             ),
+
             SizedBox(
               width:
                   8,
             ),
+
             Text(
               'Download completed',
             ),
@@ -867,8 +966,7 @@ class _TelegramMediaCardState
       );
     }
 
-    return const SizedBox
-        .shrink();
+    return const SizedBox.shrink();
   }
 
   Widget _buildAction(
@@ -880,8 +978,7 @@ class _TelegramMediaCardState
       return FilledButton.icon(
         onPressed:
             () {
-          _telegram
-              .showFileInExplorer(
+          _telegram.showFileInExplorer(
             downloadedPath,
           );
         },
@@ -968,44 +1065,16 @@ class _TelegramMediaCardState
       );
     }
 
-    /*
-     * Caso raro:
-     *
-     * completed sem filePath.
-     */
-    if (task.isCompleted) {
-      return FilledButton.icon(
-        onPressed:
-            _enqueue,
-        icon:
-            const Icon(
-          Icons.download_outlined,
-        ),
-        label:
-            const Text(
-          'Download',
-        ),
-      );
-    }
-
-    return const SizedBox
-        .shrink();
+    return const SizedBox.shrink();
   }
 
   Widget _buildPreview(
     BuildContext context,
   ) {
-    /*
-     * Não colocamos um CircularProgressIndicator
-     * animado em cada card.
-     *
-     * Dez spinners simultâneos também são
-     * trabalho desnecessário para o raster.
-     */
     if (_isLoadingPreview) {
       return Container(
         height:
-            160,
+            180,
         width:
             double.infinity,
         alignment:
@@ -1022,101 +1091,60 @@ class _TelegramMediaCardState
                   .surfaceContainerHighest,
         ),
         child:
-            const Column(
-          mainAxisSize:
-              MainAxisSize.min,
-          children: [
-            Icon(
-              Icons
-                  .image_outlined,
-              size:
-                  34,
-            ),
-            SizedBox(
-              height:
-                  8,
-            ),
-            Text(
-              'Loading preview...',
-            ),
-          ],
-        ),
+            const CircularProgressIndicator(),
       );
     }
 
-    if (_previewPath !=
-        null) {
-      return RepaintBoundary(
+    if (_previewPath != null) {
+      return ClipRRect(
+        borderRadius:
+            BorderRadius.circular(
+          8,
+        ),
         child:
-            ClipRRect(
-          borderRadius:
-              BorderRadius.circular(
-            8,
+            ConstrainedBox(
+          constraints:
+              const BoxConstraints(
+            maxHeight:
+                420,
           ),
           child:
-              ConstrainedBox(
-            constraints:
-                const BoxConstraints(
-              maxHeight:
-                  420,
+              Image.file(
+            File(
+              _previewPath!,
             ),
-            child:
-                Image.file(
-              File(
-                _previewPath!,
-              ),
-
-              width:
-                  double.infinity,
-
-              fit:
-                  BoxFit.contain,
-
-              /*
-               * Antes usamos 900.
-               *
-               * Para preview de mensagem
-               * 640 já é mais que suficiente
-               * e reduz memória/decode.
-               */
-              cacheWidth:
-                  640,
-
-              gaplessPlayback:
-                  true,
-
-              filterQuality:
-                  FilterQuality.low,
-
-              errorBuilder:
-                  (
+            width:
+                double.infinity,
+            fit:
+                BoxFit.contain,
+            gaplessPlayback:
+                true,
+            filterQuality:
+                FilterQuality.low,
+            errorBuilder:
+                (
+              context,
+              error,
+              stackTrace,
+            ) {
+              return _previewPlaceholder(
                 context,
-                error,
-                stackTrace,
-              ) {
-                return _previewPlaceholder(
-                  context,
-                  'Could not display preview.',
-                );
-              },
-            ),
+                'Could not display preview.',
+              );
+            },
           ),
         ),
       );
     }
 
-    if (_previewError !=
-        null) {
+    if (_previewError != null) {
       return _previewPlaceholder(
         context,
         'Preview unavailable.',
       );
     }
 
-    return _previewPlaceholder(
-      context,
-      'Preview',
-    );
+    return const SizedBox.shrink();
   }
 
   Widget _previewPlaceholder(
@@ -1147,9 +1175,9 @@ class _TelegramMediaCardState
             MainAxisSize.min,
         children: [
           const Icon(
-            Icons.image_outlined,
+            Icons.broken_image_outlined,
             size:
-                34,
+                36,
           ),
 
           const SizedBox(
@@ -1168,8 +1196,7 @@ class _TelegramMediaCardState
   String _formatSize(
     int bytes,
   ) {
-    if (bytes <=
-        0) {
+    if (bytes <= 0) {
       return 'Unknown size';
     }
 
@@ -1182,18 +1209,15 @@ class _TelegramMediaCardState
     const gb =
         mb * 1024;
 
-    if (bytes >=
-        gb) {
+    if (bytes >= gb) {
       return '${(bytes / gb).toStringAsFixed(2)} GB';
     }
 
-    if (bytes >=
-        mb) {
+    if (bytes >= mb) {
       return '${(bytes / mb).toStringAsFixed(2)} MB';
     }
 
-    if (bytes >=
-        kb) {
+    if (bytes >= kb) {
       return '${(bytes / kb).toStringAsFixed(1)} KB';
     }
 

@@ -27,7 +27,7 @@ class TelegramDownloadEngine {
       4;
 
   static const int _maxInFlight =
-      8;
+      4;
 
   // ============================================================
   // LARGE FILE DOWNLOAD
