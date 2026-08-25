@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'pages/catalog_page.dart';
 import 'pages/download_queue_page.dart';
+import 'services/performance_monitor.dart';
 import 'widgets/download_queue_overlay.dart';
 
 final GlobalKey<NavigatorState>
@@ -9,6 +10,12 @@ final GlobalKey<NavigatorState>
     GlobalKey<NavigatorState>();
 
 void main() {
+  WidgetsFlutterBinding
+      .ensureInitialized();
+
+  PerformanceMonitor.instance
+      .start();
+
   runApp(
     const FabulariumApp(),
   );

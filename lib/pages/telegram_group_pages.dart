@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/telegram_group.dart';
-import '../services/telegram_service.dart';
+import '../services/telegram_groups_worker.dart';
 import 'telegram_messages_page.dart';
 
 class TelegramGroupsPage
@@ -18,10 +18,15 @@ class TelegramGroupsPage
 
 class _TelegramGroupsPageState
     extends State<TelegramGroupsPage> {
-  final TelegramService _telegram =
-      TelegramService.instance;
+  final TelegramGroupsWorker
+      _groupsWorker =
+      TelegramGroupsWorker.instance;
 
-  bool _isLoading = true;
+  bool _isLoading =
+      true;
+
+  bool _isRefreshing =
+      false;
 
   String? _error;
 
@@ -39,8 +44,7 @@ class _TelegramGroupsPageState
   void initState() {
     super.initState();
 
-    _searchController
-        .addListener(
+    _searchController.addListener(
       _onSearchChanged,
     );
 
@@ -49,38 +53,69 @@ class _TelegramGroupsPageState
 
   @override
   void dispose() {
-    _searchController
-        .removeListener(
+    _searchController.removeListener(
       _onSearchChanged,
     );
 
-    _searchController
-        .dispose();
+    _searchController.dispose();
 
     super.dispose();
   }
 
   void _onSearchChanged() {
+    if (!mounted) {
+      return;
+    }
+
     setState(() {
       _searchQuery =
-          _searchController
-              .text
+          _searchController.text
               .trim()
               .toLowerCase();
     });
   }
 
-  Future<void> _loadGroups() async {
-    setState(() {
-      _isLoading = true;
+  Future<void> _loadGroups({
+    bool forceRefresh = false,
+  }) async {
+    if (_isRefreshing) {
+      return;
+    }
 
-      _error = null;
-    });
+    if (forceRefresh) {
+      setState(() {
+        _isRefreshing =
+            true;
+
+        _error =
+            null;
+      });
+    } else {
+      setState(() {
+        _isLoading =
+            true;
+
+        _error =
+            null;
+      });
+    }
 
     try {
+      /*
+       * Primeira chamada:
+       *
+       * Telegram em isolate separado.
+       *
+       * Próximas chamadas:
+       *
+       * cache instantâneo.
+       */
       final groups =
-          await _telegram
-              .getGroups();
+          await _groupsWorker
+              .getGroups(
+        forceRefresh:
+            forceRefresh,
+      );
 
       if (!mounted) {
         return;
@@ -91,6 +126,9 @@ class _TelegramGroupsPageState
             groups;
 
         _isLoading =
+            false;
+
+        _isRefreshing =
             false;
       });
     } catch (e) {
@@ -103,6 +141,9 @@ class _TelegramGroupsPageState
             e.toString();
 
         _isLoading =
+            false;
+
+        _isRefreshing =
             false;
       });
     }
@@ -131,12 +172,20 @@ class _TelegramGroupsPageState
   ) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) =>
-            TelegramMessagesPage(
+        builder:
+            (_) =>
+                TelegramMessagesPage(
           group:
               group,
         ),
       ),
+    );
+  }
+
+  Future<void> _refresh() async {
+    await _loadGroups(
+      forceRefresh:
+          true,
     );
   }
 
@@ -145,55 +194,107 @@ class _TelegramGroupsPageState
     BuildContext context,
   ) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(
+      appBar:
+          AppBar(
+        title:
+            const Text(
           'Telegram Groups',
         ),
         actions: [
-          IconButton(
-            tooltip:
-                'Refresh',
-            onPressed:
-                _isLoading
-                    ? null
-                    : _loadGroups,
-            icon:
-                const Icon(
-              Icons.refresh,
+          if (_isRefreshing)
+            const Padding(
+              padding:
+                  EdgeInsets.symmetric(
+                horizontal:
+                    18,
+              ),
+              child:
+                  Center(
+                child:
+                    SizedBox(
+                  width:
+                      18,
+                  height:
+                      18,
+                  child:
+                      CircularProgressIndicator(
+                    strokeWidth:
+                        2,
+                  ),
+                ),
+              ),
+            )
+          else
+            IconButton(
+              tooltip:
+                  'Refresh',
+              onPressed:
+                  _isLoading
+                      ? null
+                      : _refresh,
+              icon:
+                  const Icon(
+                Icons.refresh,
+              ),
             ),
-          ),
         ],
       ),
-      body: _buildBody(),
+      body:
+          _buildBody(),
     );
   }
 
   Widget _buildBody() {
-    if (_isLoading) {
+    /*
+     * Loading somente quando ainda
+     * não existe nenhuma lista.
+     */
+    if (_isLoading &&
+        _groups.isEmpty) {
       return const Center(
         child:
+            Column(
+          mainAxisSize:
+              MainAxisSize.min,
+          children: [
             CircularProgressIndicator(),
+
+            SizedBox(
+              height:
+                  16,
+            ),
+
+            Text(
+              'Loading Telegram groups...',
+            ),
+          ],
+        ),
       );
     }
 
-    if (_error != null) {
+    if (_error != null &&
+        _groups.isEmpty) {
       return Center(
-        child: Padding(
+        child:
+            Padding(
           padding:
               const EdgeInsets.all(
             24,
           ),
-          child: Column(
+          child:
+              Column(
             mainAxisSize:
                 MainAxisSize.min,
             children: [
               const Icon(
                 Icons.error_outline,
-                size: 64,
+                size:
+                    64,
               ),
 
               const SizedBox(
-                height: 16,
+                height:
+                    16,
               ),
 
               Text(
@@ -205,7 +306,8 @@ class _TelegramGroupsPageState
               ),
 
               const SizedBox(
-                height: 12,
+                height:
+                    12,
               ),
 
               Text(
@@ -215,12 +317,18 @@ class _TelegramGroupsPageState
               ),
 
               const SizedBox(
-                height: 20,
+                height:
+                    20,
               ),
 
               FilledButton.icon(
                 onPressed:
-                    _loadGroups,
+                    () {
+                  _loadGroups(
+                    forceRefresh:
+                        true,
+                  );
+                },
                 icon:
                     const Icon(
                   Icons.refresh,
@@ -236,8 +344,17 @@ class _TelegramGroupsPageState
       );
     }
 
+    final filteredGroups =
+        _filteredGroups;
+
     return Column(
       children: [
+        if (_isRefreshing)
+          const LinearProgressIndicator(
+            minHeight:
+                2,
+          ),
+
         Padding(
           padding:
               const EdgeInsets.fromLTRB(
@@ -246,7 +363,8 @@ class _TelegramGroupsPageState
             24,
             12,
           ),
-          child: TextField(
+          child:
+              TextField(
             controller:
                 _searchController,
             decoration:
@@ -258,13 +376,13 @@ class _TelegramGroupsPageState
                 Icons.search,
               ),
               suffixIcon:
-                  _searchQuery
-                          .isNotEmpty
+                  _searchQuery.isNotEmpty
                       ? IconButton(
-                          onPressed: () {
-                            _searchController
-                                .clear();
-                          },
+                          tooltip:
+                              'Clear Search',
+                          onPressed:
+                              _searchController
+                                  .clear,
                           icon:
                               const Icon(
                             Icons.clear,
@@ -279,32 +397,46 @@ class _TelegramGroupsPageState
 
         Padding(
           padding:
-              const EdgeInsets
-                  .symmetric(
-            horizontal: 24,
+              const EdgeInsets.symmetric(
+            horizontal:
+                24,
           ),
-          child: Row(
+          child:
+              Row(
             children: [
               Text(
-                '${_filteredGroups.length} groups',
+                '${filteredGroups.length} groups',
                 style:
                     Theme.of(context)
                         .textTheme
                         .titleMedium,
               ),
+
+              const Spacer(),
+
+              if (_isRefreshing)
+                Text(
+                  'Updating...',
+                  style:
+                      Theme.of(context)
+                          .textTheme
+                          .bodySmall,
+                ),
             ],
           ),
         ),
 
         const SizedBox(
-          height: 8,
+          height:
+              8,
         ),
 
         Expanded(
           child:
-              _filteredGroups.isEmpty
+              filteredGroups.isEmpty
                   ? const Center(
-                      child: Text(
+                      child:
+                          Text(
                         'No groups found.',
                       ),
                     )
@@ -314,15 +446,15 @@ class _TelegramGroupsPageState
                         24,
                       ),
                       itemCount:
-                          _filteredGroups
-                              .length,
+                          filteredGroups.length,
                       separatorBuilder:
                           (
                         context,
                         index,
                       ) =>
                               const Divider(
-                        height: 1,
+                        height:
+                            1,
                       ),
                       itemBuilder:
                           (
@@ -330,7 +462,7 @@ class _TelegramGroupsPageState
                         index,
                       ) {
                         final group =
-                            _filteredGroups[
+                            filteredGroups[
                                 index];
 
                         return ListTile(
@@ -364,7 +496,8 @@ class _TelegramGroupsPageState
                                 .chevron_right,
                           ),
 
-                          onTap: () {
+                          onTap:
+                              () {
                             _openGroup(
                               group,
                             );

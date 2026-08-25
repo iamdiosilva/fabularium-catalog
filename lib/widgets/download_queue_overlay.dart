@@ -42,45 +42,48 @@ class DownloadQueueOverlay
           bottom:
               24,
           child:
-              Material(
-            elevation:
-                8,
-            borderRadius:
-                BorderRadius.circular(
-              14,
-            ),
-            color:
-                Theme.of(context)
-                    .colorScheme
-                    .surface,
+              RepaintBoundary(
             child:
-                InkWell(
+                Material(
+              elevation:
+                  8,
               borderRadius:
                   BorderRadius.circular(
                 14,
               ),
-              onTap:
-                  onOpen,
+              color:
+                  Theme.of(context)
+                      .colorScheme
+                      .surface,
               child:
-                  Container(
-                width:
-                    370,
-                padding:
-                    const EdgeInsets.all(
+                  InkWell(
+                borderRadius:
+                    BorderRadius.circular(
                   14,
                 ),
+                onTap:
+                    onOpen,
                 child:
-                    current !=
-                            null
-                        ? _buildCurrent(
-                            context,
-                            queue,
-                            current,
-                          )
-                        : _buildIdle(
-                            context,
-                            queue,
-                          ),
+                    Container(
+                  width:
+                      370,
+                  padding:
+                      const EdgeInsets.all(
+                    14,
+                  ),
+                  child:
+                      current !=
+                              null
+                          ? _buildCurrent(
+                              context,
+                              queue,
+                              current,
+                            )
+                          : _buildIdle(
+                              context,
+                              queue,
+                            ),
+                ),
               ),
             ),
           ),
@@ -285,12 +288,9 @@ class DownloadQueueOverlay
     Duration? duration,
   ) {
     if (duration ==
-        null) {
-      return '';
-    }
-
-    if (duration.inSeconds <=
-        0) {
+            null ||
+        duration.inSeconds <=
+            0) {
       return '';
     }
 

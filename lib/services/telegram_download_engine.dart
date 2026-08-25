@@ -17,26 +17,21 @@ class TelegramDownloadEngine {
   final TelegramClient _telegramClient =
       TelegramClient.instance;
 
-  /*
-   * Limite máximo usado pelo upload.getFile.
-   */
   static const int _chunkSize =
       1024 * 1024;
 
-  /*
-   * Quatro conexões MTProto dedicadas.
-   */
+  static const int _previewChunkSize =
+      512 * 1024;
+
   static const int _connectionCount =
       4;
 
-  /*
-   * Oito requests simultâneos.
-   *
-   * Cada conexão normalmente terá
-   * dois requests em voo.
-   */
   static const int _maxInFlight =
       8;
+
+  // ============================================================
+  // LARGE FILE DOWNLOAD
+  // ============================================================
 
   Future<String> downloadMedia(
     TelegramMedia media, {
@@ -62,7 +57,7 @@ class TelegramDownloadEngine {
       ),
     );
 
-    return _downloadLocation(
+    return _downloadLargeLocation(
       initialDcId:
           media.dcId,
       location:
@@ -76,7 +71,51 @@ class TelegramDownloadEngine {
     );
   }
 
-  Future<String> _downloadLocation({
+  // ============================================================
+  // PREVIEW DOWNLOAD
+  // ============================================================
+
+  Future<String> downloadPreview(
+    TelegramMedia media,
+  ) async {
+    final location =
+        media.previewLocation;
+
+    if (location == null) {
+      throw StateError(
+        'Preview is not available.',
+      );
+    }
+
+    final directory =
+        await _getCacheDirectory();
+
+    final destination =
+        File(
+      p.join(
+        directory.path,
+        '${_sanitizeFileName(media.cacheKey)}.jpg',
+      ),
+    );
+
+    return _downloadSmallLocation(
+      initialDcId:
+          media.dcId,
+      location:
+          location,
+      destination:
+          destination,
+      expectedSize:
+          media.previewSize ??
+              0,
+    );
+  }
+
+  // ============================================================
+  // HIGH PERFORMANCE FILE
+  // ============================================================
+
+  Future<String> _downloadLargeLocation({
     required int initialDcId,
     required t.InputFileLocationBase
         location,
@@ -118,13 +157,6 @@ class TelegramDownloadEngine {
       await tempFile.delete();
     }
 
-    /*
-     * Antes de começar o arquivo, abrimos
-     * o pool inteiro.
-     *
-     * Isso evita perder desempenho criando
-     * conexão no meio do download.
-     */
     await _telegramClient
         .warmDownloadPool(
       initialDcId,
@@ -138,12 +170,6 @@ class TelegramDownloadEngine {
           FileMode.write,
     );
 
-    /*
-     * Pré-aloca o espaço do arquivo.
-     *
-     * Isso reduz fragmentação no disco e
-     * permite escrita fora de ordem.
-     */
     if (expectedSize >
         0) {
       await randomAccessFile
@@ -207,6 +233,8 @@ class TelegramDownloadEngine {
               location,
           offset:
               offset,
+          limit:
+              _chunkSize,
         );
 
         nextOffset +=
@@ -217,20 +245,9 @@ class TelegramDownloadEngine {
     }
 
     try {
-      /*
-       * Primeiro enchemos a janela.
-       *
-       * 8 MB ficam sendo requisitados
-       * simultaneamente.
-       */
       fillWindow();
 
       while (inFlight.isNotEmpty) {
-        /*
-         * Aguarda QUALQUER request terminar.
-         *
-         * Não esperamos mais o lote inteiro.
-         */
         final chunk =
             await Future.any(
           inFlight.values,
@@ -240,12 +257,6 @@ class TelegramDownloadEngine {
           chunk.offset,
         );
 
-        /*
-         * Arquivo sem tamanho conhecido:
-         *
-         * chunk menor que 1 MB indica
-         * que encontramos o final.
-         */
         if (chunk.bytes.length <
             _chunkSize) {
           final end =
@@ -261,11 +272,6 @@ class TelegramDownloadEngine {
           }
         }
 
-        /*
-         * Requests que já estavam em voo
-         * podem ter ultrapassado o final
-         * descoberto.
-         */
         if (discoveredEnd !=
                 null &&
             chunk.offset >=
@@ -276,20 +282,6 @@ class TelegramDownloadEngine {
         }
 
         if (chunk.bytes.isNotEmpty) {
-          /*
-           * Escrevemos na posição original
-           * do chunk.
-           *
-           * As respostas podem chegar:
-           *
-           * 3
-           * 1
-           * 4
-           * 2
-           *
-           * e ainda assim o arquivo final
-           * permanece correto.
-           */
           await writer.writeAt(
             chunk.offset,
             chunk.bytes,
@@ -304,32 +296,19 @@ class TelegramDownloadEngine {
           );
         }
 
-        /*
-         * Assim que UM request termina,
-         * imediatamente colocamos outro.
-         *
-         * Isso mantém a janela cheia.
-         */
         fillWindow();
       }
 
       await writer.flush();
 
-      /*
-       * Não usamos File.length aqui porque
-       * pré-alocamos o arquivo.
-       *
-       * Validamos pelos bytes realmente
-       * recebidos.
-       */
       if (expectedSize >
               0 &&
           receivedBytes <
               expectedSize) {
         throw Exception(
-          'Download incompleto. '
-          'Esperado: $expectedSize bytes. '
-          'Recebido: $receivedBytes bytes.',
+          'Incomplete download. '
+          'Expected: $expectedSize bytes. '
+          'Received: $receivedBytes bytes.',
         );
       }
     } catch (_) {
@@ -371,6 +350,204 @@ class TelegramDownloadEngine {
     return completed.path;
   }
 
+  // ============================================================
+  // SMALL FILE / PREVIEW
+  // ============================================================
+
+  Future<String> _downloadSmallLocation({
+    required int initialDcId,
+    required t.InputFileLocationBase
+        location,
+    required File destination,
+    required int expectedSize,
+  }) async {
+    await destination.parent.create(
+      recursive:
+          true,
+    );
+
+    if (await destination.exists()) {
+      if (expectedSize <=
+          0) {
+        return destination.path;
+      }
+
+      final existingSize =
+          await destination.length();
+
+      if (existingSize ==
+          expectedSize) {
+        return destination.path;
+      }
+    }
+
+    final temp =
+        File(
+      '${destination.path}.part',
+    );
+
+    if (await temp.exists()) {
+      await temp.delete();
+    }
+
+    /*
+     * Preview worker uses only one dedicated
+     * media session.
+     *
+     * This prevents a thumbnail storm.
+     */
+    int dcId =
+        initialDcId;
+
+    var client =
+        await _telegramClient
+            .getDownloadClientForDataCenter(
+      dcId,
+      0,
+    );
+
+    int offset =
+        0;
+
+    int migrations =
+        0;
+
+    final output =
+        await temp.open(
+      mode:
+          FileMode.write,
+    );
+
+    try {
+      while (true) {
+        final response =
+            await client.upload
+                .getFile(
+          precise:
+              false,
+          cdnSupported:
+              false,
+          location:
+              location,
+          offset:
+              offset,
+          limit:
+              _previewChunkSize,
+        );
+
+        if (response.error != null) {
+          final errorMessage =
+              response
+                  .error!
+                  .errorMessage;
+
+          final migrateDc =
+              _extractMigrationDc(
+            errorMessage,
+          );
+
+          if (migrateDc != null) {
+            migrations++;
+
+            if (migrations >
+                3) {
+              throw Exception(
+                'Too many Telegram DC migrations.',
+              );
+            }
+
+            dcId =
+                migrateDc;
+
+            client =
+                await _telegramClient
+                    .getDownloadClientForDataCenter(
+              dcId,
+              0,
+            );
+
+            continue;
+          }
+
+          throw Exception(
+            errorMessage,
+          );
+        }
+
+        final dynamic result =
+            response.result;
+
+        if (result == null) {
+          throw Exception(
+            'Telegram returned an empty preview response.',
+          );
+        }
+
+        final bytes =
+            _readBytes(
+          result,
+        );
+
+        if (bytes.isEmpty) {
+          break;
+        }
+
+        await output.writeFrom(
+          bytes,
+        );
+
+        offset +=
+            bytes.length;
+
+        if (expectedSize >
+                0 &&
+            offset >=
+                expectedSize) {
+          break;
+        }
+
+        if (bytes.length <
+            _previewChunkSize) {
+          break;
+        }
+      }
+    } finally {
+      await output.close();
+    }
+
+    if (expectedSize >
+        0) {
+      final downloaded =
+          await temp.length();
+
+      if (downloaded <
+          expectedSize) {
+        try {
+          await temp.delete();
+        } catch (_) {}
+
+        throw Exception(
+          'Incomplete Telegram preview.',
+        );
+      }
+    }
+
+    if (await destination.exists()) {
+      await destination.delete();
+    }
+
+    return temp.rename(
+      destination.path,
+    ).then(
+      (file) =>
+          file.path,
+    );
+  }
+
+  // ============================================================
+  // CHUNK
+  // ============================================================
+
   Future<_TelegramDownloadChunk>
       _downloadChunk({
     required int initialDcId,
@@ -378,15 +555,13 @@ class TelegramDownloadEngine {
     required t.InputFileLocationBase
         location,
     required int offset,
+    required int limit,
   }) async {
     int dcId =
         initialDcId;
 
     int migrationCount =
         0;
-
-    const maxMigrations =
-        3;
 
     while (true) {
       final client =
@@ -408,7 +583,7 @@ class TelegramDownloadEngine {
         offset:
             offset,
         limit:
-            _chunkSize,
+            limit,
       );
 
       final error =
@@ -420,14 +595,14 @@ class TelegramDownloadEngine {
           error.errorMessage,
         );
 
-        if (migrateDc != null) {
+        if (migrateDc !=
+            null) {
           migrationCount++;
 
           if (migrationCount >
-              maxMigrations) {
+              3) {
             throw Exception(
-              'Muitas migrações de '
-              'Data Center durante download.',
+              'Too many Telegram DC migrations.',
             );
           }
 
@@ -447,32 +622,7 @@ class TelegramDownloadEngine {
 
       if (result == null) {
         throw Exception(
-          'Telegram retornou resposta '
-          'de arquivo vazia.',
-        );
-      }
-
-      Uint8List bytes;
-
-      try {
-        final dynamic rawBytes =
-            result.bytes;
-
-        if (rawBytes is Uint8List) {
-          bytes =
-              rawBytes;
-        } else {
-          bytes =
-              Uint8List.fromList(
-            List<int>.from(
-              rawBytes as List,
-            ),
-          );
-        }
-      } catch (_) {
-        throw Exception(
-          'Formato de arquivo retornado '
-          'pelo Telegram não suportado.',
+          'Telegram returned an empty file response.',
         );
       }
 
@@ -480,9 +630,34 @@ class TelegramDownloadEngine {
         offset:
             offset,
         bytes:
-            bytes,
+            _readBytes(
+          result,
+        ),
         dcId:
             dcId,
+      );
+    }
+  }
+
+  Uint8List _readBytes(
+    dynamic result,
+  ) {
+    try {
+      final dynamic rawBytes =
+          result.bytes;
+
+      if (rawBytes is Uint8List) {
+        return rawBytes;
+      }
+
+      return Uint8List.fromList(
+        List<int>.from(
+          rawBytes as List,
+        ),
+      );
+    } catch (_) {
+      throw Exception(
+        'Unsupported Telegram file response.',
       );
     }
   }
@@ -516,6 +691,10 @@ class TelegramDownloadEngine {
     return null;
   }
 
+  // ============================================================
+  // DIRECTORIES
+  // ============================================================
+
   Future<Directory>
       _getDownloadDirectory(
     String groupTitle,
@@ -542,6 +721,36 @@ class TelegramDownloadEngine {
         _sanitizeFileName(
           groupTitle,
         ),
+      ),
+    );
+
+    await directory.create(
+      recursive:
+          true,
+    );
+
+    return directory;
+  }
+
+  Future<Directory>
+      _getCacheDirectory() async {
+    final localAppData =
+        Platform.environment[
+            'LOCALAPPDATA'];
+
+    final basePath =
+        localAppData != null &&
+                localAppData.isNotEmpty
+            ? localAppData
+            : Directory.systemTemp.path;
+
+    final directory =
+        Directory(
+      p.join(
+        basePath,
+        'Fabularium',
+        'Telegram',
+        'cache',
       ),
     );
 

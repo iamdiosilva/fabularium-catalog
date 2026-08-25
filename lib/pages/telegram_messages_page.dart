@@ -8,6 +8,7 @@ import '../models/telegram_group.dart';
 import '../models/telegram_media.dart';
 import '../models/telegram_message.dart';
 import '../services/download_queue_service.dart';
+import '../services/telegram_preview_manger.dart';
 import '../services/telegram_service.dart';
 import '../widgets/download_queue_button.dart';
 
@@ -31,6 +32,10 @@ class _TelegramMessagesPageState
   final TelegramService _telegram =
       TelegramService.instance;
 
+  final TelegramPreviewManager
+      _previewManager =
+      TelegramPreviewManager.instance;
+
   bool _isLoading =
       true;
 
@@ -42,6 +47,13 @@ class _TelegramMessagesPageState
   @override
   void initState() {
     super.initState();
+
+    /*
+     * Faz os previews aguardarem o primeiro
+     * desenho da tela.
+     */
+    _previewManager
+        .prepareForScreen();
 
     _loadMessages();
   }
@@ -223,12 +235,21 @@ class _TelegramMessagesPageState
     }
 
     return ListView.separated(
+      /*
+       * Evita que o Flutter construa cards
+       * muito além da área visível.
+       */
+      cacheExtent:
+          250,
+
       padding:
           const EdgeInsets.all(
         20,
       ),
+
       itemCount:
           _messages.length,
+
       separatorBuilder:
           (
         context,
@@ -238,6 +259,7 @@ class _TelegramMessagesPageState
         height:
             12,
       ),
+
       itemBuilder:
           (
         context,
@@ -247,11 +269,21 @@ class _TelegramMessagesPageState
             _messages[
                 index];
 
-        return _MessageCard(
-          message:
-              message,
-          groupTitle:
-              widget.group.title,
+        /*
+         * Isola o repaint de cada mensagem.
+         */
+        return RepaintBoundary(
+          child:
+              _MessageCard(
+            key:
+                ValueKey<int>(
+              message.id,
+            ),
+            message:
+                message,
+            groupTitle:
+                widget.group.title,
+          ),
         );
       },
     );
@@ -265,6 +297,7 @@ class _MessageCard
   final String groupTitle;
 
   const _MessageCard({
+    super.key,
     required this.message,
     required this.groupTitle,
   });
@@ -310,6 +343,11 @@ class _MessageCard
               ),
 
               TelegramMediaCard(
+                key:
+                    ValueKey<String>(
+                  '${message.id}_'
+                  '${message.media!.cacheKey}',
+                ),
                 media:
                     message.media!,
                 groupTitle:
@@ -415,6 +453,10 @@ class _TelegramMediaCardState
   final DownloadQueueService _queue =
       DownloadQueueService.instance;
 
+  final TelegramPreviewManager
+      _previewManager =
+      TelegramPreviewManager.instance;
+
   late final ValueListenable<int>
       _downloadListenable;
 
@@ -424,8 +466,6 @@ class _TelegramMediaCardState
 
   bool _isLoadingPreview =
       false;
-
-  String? _existingPath;
 
   @override
   void initState() {
@@ -438,22 +478,47 @@ class _TelegramMediaCardState
     );
 
     /*
-     * Consulta apenas UMA vez.
+     * IMPORTANTE:
      *
-     * Antes existsSync()/lengthSync()
-     * acabavam sendo executados a cada
-     * atualização de progresso.
+     * Removemos daqui:
+     *
+     * getDownloadedMediaPath()
+     *
+     * porque esse método fazia:
+     *
+     * File.existsSync()
+     * File.lengthSync()
+     *
+     * no isolate da UI enquanto os cards
+     * estavam sendo construídos.
      */
-    _existingPath =
-        _telegram
-            .getDownloadedMediaPath(
-      widget.media,
-      groupTitle:
-          widget.groupTitle,
-    );
 
     if (widget.media.hasPreview) {
-      _loadPreview();
+      final cached =
+          _previewManager
+              .cachedPath(
+        widget.media,
+      );
+
+      if (cached != null) {
+        _previewPath =
+            cached;
+      } else {
+        /*
+         * Deixamos o primeiro frame terminar
+         * antes de solicitar o preview.
+         */
+        WidgetsBinding.instance
+            .addPostFrameCallback(
+          (_) {
+            if (!mounted) {
+              return;
+            }
+
+            _loadPreview();
+          },
+        );
+      }
     }
   }
 
@@ -473,8 +538,8 @@ class _TelegramMediaCardState
 
     try {
       final path =
-          await _telegram
-              .downloadPreview(
+          await _previewManager
+              .getPreview(
         widget.media,
       );
 
@@ -485,6 +550,9 @@ class _TelegramMediaCardState
       setState(() {
         _previewPath =
             path;
+
+        _previewError =
+            null;
 
         _isLoadingPreview =
             false;
@@ -532,9 +600,15 @@ class _TelegramMediaCardState
           widget.groupTitle,
         );
 
-        final existingPath =
-            task?.filePath ??
-                _existingPath;
+        /*
+         * Não consultamos o disco durante
+         * build().
+         *
+         * Se o arquivo foi baixado nesta
+         * sessão, a task conhece seu path.
+         */
+        final downloadedPath =
+            task?.filePath;
 
         return Container(
           width:
@@ -592,7 +666,7 @@ class _TelegramMediaCardState
 
               _buildAction(
                 task,
-                existingPath,
+                downloadedPath,
               ),
             ],
           ),
@@ -799,16 +873,16 @@ class _TelegramMediaCardState
 
   Widget _buildAction(
     DownloadTask? task,
-    String? existingPath,
+    String? downloadedPath,
   ) {
-    if (existingPath !=
+    if (downloadedPath !=
         null) {
       return FilledButton.icon(
         onPressed:
             () {
           _telegram
               .showFileInExplorer(
-            existingPath,
+            downloadedPath,
           );
         },
         icon:
@@ -894,6 +968,26 @@ class _TelegramMediaCardState
       );
     }
 
+    /*
+     * Caso raro:
+     *
+     * completed sem filePath.
+     */
+    if (task.isCompleted) {
+      return FilledButton.icon(
+        onPressed:
+            _enqueue,
+        icon:
+            const Icon(
+          Icons.download_outlined,
+        ),
+        label:
+            const Text(
+          'Download',
+        ),
+      );
+    }
+
     return const SizedBox
         .shrink();
   }
@@ -901,10 +995,17 @@ class _TelegramMediaCardState
   Widget _buildPreview(
     BuildContext context,
   ) {
+    /*
+     * Não colocamos um CircularProgressIndicator
+     * animado em cada card.
+     *
+     * Dez spinners simultâneos também são
+     * trabalho desnecessário para o raster.
+     */
     if (_isLoadingPreview) {
       return Container(
         height:
-            180,
+            160,
         width:
             double.infinity,
         alignment:
@@ -921,48 +1022,84 @@ class _TelegramMediaCardState
                   .surfaceContainerHighest,
         ),
         child:
-            const CircularProgressIndicator(),
+            const Column(
+          mainAxisSize:
+              MainAxisSize.min,
+          children: [
+            Icon(
+              Icons
+                  .image_outlined,
+              size:
+                  34,
+            ),
+            SizedBox(
+              height:
+                  8,
+            ),
+            Text(
+              'Loading preview...',
+            ),
+          ],
+        ),
       );
     }
 
     if (_previewPath !=
         null) {
-      return ClipRRect(
-        borderRadius:
-            BorderRadius.circular(
-          8,
-        ),
+      return RepaintBoundary(
         child:
-            ConstrainedBox(
-          constraints:
-              const BoxConstraints(
-            maxHeight:
-                420,
+            ClipRRect(
+          borderRadius:
+              BorderRadius.circular(
+            8,
           ),
           child:
-              Image.file(
-            File(
-              _previewPath!,
+              ConstrainedBox(
+            constraints:
+                const BoxConstraints(
+              maxHeight:
+                  420,
             ),
-            width:
-                double.infinity,
-            fit:
-                BoxFit.contain,
-            gaplessPlayback:
-                true,
-            filterQuality:
-                FilterQuality.low,
-            errorBuilder:
-                (
-              context,
-              error,
-              stackTrace,
-            ) {
-              return _previewPlaceholder(
+            child:
+                Image.file(
+              File(
+                _previewPath!,
+              ),
+
+              width:
+                  double.infinity,
+
+              fit:
+                  BoxFit.contain,
+
+              /*
+               * Antes usamos 900.
+               *
+               * Para preview de mensagem
+               * 640 já é mais que suficiente
+               * e reduz memória/decode.
+               */
+              cacheWidth:
+                  640,
+
+              gaplessPlayback:
+                  true,
+
+              filterQuality:
+                  FilterQuality.low,
+
+              errorBuilder:
+                  (
                 context,
-                'Could not display preview.',
-              );
-            },
+                error,
+                stackTrace,
+              ) {
+                return _previewPlaceholder(
+                  context,
+                  'Could not display preview.',
+                );
+              },
+            ),
           ),
         ),
       );
@@ -976,8 +1113,10 @@ class _TelegramMediaCardState
       );
     }
 
-    return const SizedBox
-        .shrink();
+    return _previewPlaceholder(
+      context,
+      'Preview',
+    );
   }
 
   Widget _previewPlaceholder(
@@ -1008,10 +1147,9 @@ class _TelegramMediaCardState
             MainAxisSize.min,
         children: [
           const Icon(
-            Icons
-                .broken_image_outlined,
+            Icons.image_outlined,
             size:
-                36,
+                34,
           ),
 
           const SizedBox(
