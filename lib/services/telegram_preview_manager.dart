@@ -4,6 +4,7 @@ import 'dart:collection';
 import '../models/telegram_media.dart';
 import 'download_queue_service.dart';
 import 'telegram_download_worker.dart';
+import 'telegram_file_service.dart';
 import 'telegram_performance_coordinator.dart';
 
 class TelegramPreviewManager {
@@ -18,6 +19,9 @@ class TelegramPreviewManager {
   final DownloadQueueService _downloadQueue =
       DownloadQueueService.instance;
 
+  final TelegramFileService _files =
+      TelegramFileService.instance;
+
   final TelegramPerformanceCoordinator _performance =
       TelegramPerformanceCoordinator.instance;
 
@@ -27,24 +31,9 @@ class TelegramPreviewManager {
   final Map<String, _InFlightPreview> _inFlight =
       <String, _InFlightPreview>{};
 
-  /*
-   * Fila principal.
-   *
-   * Queue.removeFirst() é O(1), diferente do
-   * List.removeAt(0), que precisa deslocar os
-   * elementos restantes.
-   */
   final Queue<_PreviewRequest> _queue =
       Queue<_PreviewRequest>();
 
-  /*
-   * Pedidos pertencentes a telas antigas são
-   * retirados imediatamente da fila principal.
-   *
-   * Seus Futures são cancelados gradualmente
-   * nesta fila separada para evitar uma grande
-   * sequência de completions no mesmo ciclo.
-   */
   final Queue<_PreviewRequest> _staleQueue =
       Queue<_PreviewRequest>();
 
@@ -59,6 +48,10 @@ class TelegramPreviewManager {
 
   int _generation =
       0;
+
+  Future<void>? _cacheMaintenanceFuture;
+
+  DateTime? _lastCacheMaintenance;
 
   static const Duration _betweenRequests =
       Duration(
@@ -80,6 +73,15 @@ class TelegramPreviewManager {
     milliseconds: 8,
   );
 
+  /*
+   * Não precisamos varrer o disco toda vez
+   * que uma tela é aberta.
+   */
+  static const Duration _cacheMaintenanceInterval =
+      Duration(
+    minutes: 30,
+  );
+
   // ============================================================
   // CACHE
   // ============================================================
@@ -89,6 +91,88 @@ class TelegramPreviewManager {
   ) {
     return _memoryCache[
         media.cacheKey];
+  }
+
+  void _scheduleCacheMaintenance() {
+    if (_cacheMaintenanceFuture !=
+        null) {
+      return;
+    }
+
+    final now =
+        DateTime.now();
+
+    final last =
+        _lastCacheMaintenance;
+
+    if (last != null &&
+        now.difference(
+              last,
+            ) <
+            _cacheMaintenanceInterval) {
+      return;
+    }
+
+    /*
+     * Arquivos atualmente conhecidos pelo cache
+     * em memória não podem ser removidos nesta
+     * rodada.
+     */
+    final protectedPaths =
+        _memoryCache.values.toSet();
+
+    late final Future<void>
+        future;
+
+    future = _files.cleanupPreviewCache(
+      maxBytes:
+          TelegramFileService
+              .previewCacheMaxBytes,
+      maxAge:
+          TelegramFileService
+              .previewCacheMaxAge,
+      protectedPaths:
+          protectedPaths,
+    ).whenComplete(
+      () {
+        _lastCacheMaintenance =
+            DateTime.now();
+
+        if (identical(
+          _cacheMaintenanceFuture,
+          future,
+        )) {
+          _cacheMaintenanceFuture =
+              null;
+        }
+      },
+    );
+
+    _cacheMaintenanceFuture =
+        future;
+  }
+
+  Future<void> _waitForCacheMaintenance() async {
+    final maintenance =
+        _cacheMaintenanceFuture;
+
+    if (maintenance == null) {
+      return;
+    }
+
+    /*
+     * Impede que o preview worker comece a usar
+     * um arquivo enquanto a manutenção física
+     * está avaliando/removendo aquele mesmo
+     * arquivo.
+     */
+    try {
+      await maintenance;
+    } catch (_) {
+      /*
+       * Manutenção de cache é best effort.
+       */
+    }
   }
 
   // ============================================================
@@ -110,11 +194,6 @@ class TelegramPreviewManager {
       );
     }
 
-    /*
-     * Se a mesma preview já está sendo carregada
-     * para a tela atual, compartilhamos o mesmo
-     * Future.
-     */
     final existing =
         _inFlight[key];
 
@@ -183,14 +262,6 @@ class TelegramPreviewManager {
         final request =
             _queue.first;
 
-        /*
-         * Segurança extra.
-         *
-         * Normalmente pedidos antigos já terão
-         * sido movidos por _advanceGeneration(),
-         * mas uma mudança de geração pode acontecer
-         * enquanto este Future está aguardando.
-         */
         if (request.generation !=
             _generation) {
           _moveFirstRequestToStaleQueue();
@@ -210,10 +281,6 @@ class TelegramPreviewManager {
             _initialDelay,
           );
 
-          /*
-           * Durante o delay o usuário pode ter
-           * navegado para outra tela.
-           */
           if (request.generation !=
               _generation) {
             continue;
@@ -223,10 +290,6 @@ class TelegramPreviewManager {
             break;
           }
 
-          /*
-           * O pedido que estava na frente pode ter
-           * sido retirado pela troca de geração.
-           */
           if (!identical(
             _queue.first,
             request,
@@ -243,9 +306,31 @@ class TelegramPreviewManager {
           request,
         );
 
+        if (request.generation !=
+            _generation) {
+          continue;
+        }
+
+        if (_queue.isEmpty) {
+          break;
+        }
+
+        if (!identical(
+          _queue.first,
+          request,
+        )) {
+          continue;
+        }
+
+        // --------------------------------------------------------
+        // PHYSICAL CACHE MAINTENANCE
+        // --------------------------------------------------------
+
+        await _waitForCacheMaintenance();
+
         /*
-         * A tela pode ter mudado enquanto
-         * aguardávamos a janela de performance.
+         * A geração pode ter mudado enquanto
+         * aguardávamos a limpeza física.
          */
         if (request.generation !=
             _generation) {
@@ -265,7 +350,7 @@ class TelegramPreviewManager {
 
         /*
          * Só removemos da fila imediatamente
-         * antes de realmente iniciar o download.
+         * antes do download real.
          */
         _queue.removeFirst();
 
@@ -273,7 +358,7 @@ class TelegramPreviewManager {
             request.media.cacheKey;
 
         // --------------------------------------------------------
-        // CACHE MAY HAVE BEEN FILLED WHILE WAITING
+        // MEMORY CACHE
         // --------------------------------------------------------
 
         final cached =
@@ -306,20 +391,9 @@ class TelegramPreviewManager {
             request.media,
           );
 
-          /*
-           * Mesmo que o usuário tenha mudado de
-           * tela enquanto o arquivo estava sendo
-           * baixado, o preview já existe fisicamente
-           * e pode ser reutilizado posteriormente.
-           */
           _memoryCache[key] =
               path;
 
-          /*
-           * Se a geração mudou durante o download,
-           * aquela tela não precisa mais receber o
-           * resultado.
-           */
           if (request.generation !=
               _generation) {
             if (!request
@@ -356,11 +430,6 @@ class TelegramPreviewManager {
           );
         }
 
-        /*
-         * Espaçamento entre previews para não
-         * disputar agressivamente CPU/rede/disco
-         * com navegação e downloads grandes.
-         */
         if (_queue.isNotEmpty) {
           await Future<void>.delayed(
             _betweenRequests,
@@ -371,11 +440,6 @@ class TelegramPreviewManager {
       _processing =
           false;
 
-      /*
-       * É possível que um novo pedido tenha
-       * entrado exatamente enquanto o loop
-       * estava terminando.
-       */
       if (_queue.isNotEmpty) {
         _startProcessing();
       }
@@ -402,12 +466,6 @@ class TelegramPreviewManager {
       final userInteracting =
           _performance.isInteractive;
 
-      /*
-       * Só seguramos previews quando:
-       *
-       * 1. existe um download grande rodando;
-       * 2. o usuário está interagindo com a UI.
-       */
       if (!largeDownloadRunning ||
           !userInteracting) {
         return;
@@ -428,6 +486,12 @@ class TelegramPreviewManager {
       resetInitialDelay:
           true,
     );
+
+    /*
+     * Aproveitamos a abertura de uma tela Telegram
+     * para fazer manutenção oportunista do cache.
+     */
+    _scheduleCacheMaintenance();
   }
 
   void cancelPending({
@@ -449,24 +513,10 @@ class TelegramPreviewManager {
           true;
     }
 
-    /*
-     * Esta é a mudança mais importante.
-     *
-     * Antigamente pedidos antigos continuavam
-     * ocupando a frente da List e precisavam ser
-     * removidos um por um pelo loop principal.
-     *
-     * Agora são retirados imediatamente da fila
-     * que atende a tela atual.
-     */
     _moveQueuedRequestsToStaleQueue();
 
     _startStaleCancellation();
 
-    /*
-     * Caso o processador estivesse parado e
-     * existam pedidos válidos, garante retomada.
-     */
     _startProcessing();
   }
 
@@ -495,13 +545,6 @@ class TelegramPreviewManager {
         continue;
       }
 
-      /*
-       * Remove imediatamente do mapa de in-flight
-       * quando ainda for exatamente esta requisição.
-       *
-       * Assim uma nova tela pode pedir a mesma
-       * imagem sem reutilizar o Future antigo.
-       */
       _removeInFlightIfSame(
         request,
       );
@@ -567,11 +610,6 @@ class TelegramPreviewManager {
           );
         }
 
-        /*
-         * Mantemos o pequeno espaçamento que já
-         * existia anteriormente, mas agora ele não
-         * bloqueia a fila de previews da tela nova.
-         */
         if (_staleQueue.isNotEmpty) {
           await Future<void>.delayed(
             _staleCancellationDelay,
