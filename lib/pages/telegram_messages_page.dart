@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -28,24 +29,72 @@ class TelegramMessagesPage extends StatefulWidget {
 
 class _TelegramMessagesPageState
     extends State<TelegramMessagesPage> {
+  static const int _pageSize = 50;
+
+  /*
+   * Quando restarem aproximadamente 600 pixels
+   * abaixo do viewport, já buscamos a próxima
+   * página.
+   *
+   * Isso evita que o usuário veja a lista parar
+   * antes da próxima página chegar.
+   */
+  static const double _loadMoreThreshold =
+      600;
+
   final TelegramBrowseWorker _browseWorker =
       TelegramBrowseWorker.instance;
 
   final TelegramPreviewManager _previewManager =
       TelegramPreviewManager.instance;
 
+  final ScrollController _scrollController =
+      ScrollController();
+
   bool _isLoading = true;
+
   bool _isRefreshing = false;
+
+  bool _isLoadingMore = false;
+
+  bool _hasMore = true;
 
   String? _error;
 
+  String? _loadMoreError;
+
   List<TelegramMessage> _messages = [];
 
+  /*
+   * Cursor da próxima página.
+   *
+   * Não dependemos diretamente de
+   * _messages.last.id porque:
+   *
+   * - fazemos deduplicação;
+   * - o Telegram pode eventualmente devolver
+   *   a mensagem do offset novamente;
+   * - queremos manter o cursor separado da UI.
+   */
+  int _nextOffsetId = 0;
+
+  /*
+   * Invalida respostas antigas quando refresh,
+   * dispose ou outra carga principal acontece.
+   */
   int _requestGeneration = 0;
+
+  // ============================================================
+  // LIFECYCLE
+  // ============================================================
 
   @override
   void initState() {
     super.initState();
+
+    _scrollController.addListener(
+      _onScroll,
+    );
 
     _previewManager.prepareForScreen();
 
@@ -56,10 +105,97 @@ class _TelegramMessagesPageState
   void dispose() {
     _requestGeneration++;
 
+    _scrollController.removeListener(
+      _onScroll,
+    );
+
+    _scrollController.dispose();
+
     _previewManager.cancelPending();
 
     super.dispose();
   }
+
+  // ============================================================
+  // SCROLL
+  // ============================================================
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) {
+      return;
+    }
+
+    if (_isLoading ||
+        _isRefreshing ||
+        _isLoadingMore ||
+        !_hasMore ||
+        _loadMoreError != null) {
+      return;
+    }
+
+    final position =
+        _scrollController.position;
+
+    if (position.extentAfter >
+        _loadMoreThreshold) {
+      return;
+    }
+
+    unawaited(
+      _loadMore(),
+    );
+  }
+
+  /*
+   * Se a primeira página for muito pequena e
+   * nem gerar scroll, o ScrollController não
+   * terá movimento suficiente para disparar
+   * _onScroll().
+   *
+   * Depois de inserir uma página verificamos
+   * novamente o espaço restante.
+   */
+  void _scheduleLoadMoreCheck(
+    int generation,
+  ) {
+    WidgetsBinding.instance
+        .addPostFrameCallback(
+      (_) {
+        if (!mounted ||
+            generation !=
+                _requestGeneration) {
+          return;
+        }
+
+        if (!_scrollController.hasClients) {
+          return;
+        }
+
+        if (_isLoading ||
+            _isRefreshing ||
+            _isLoadingMore ||
+            !_hasMore ||
+            _loadMoreError != null) {
+          return;
+        }
+
+        if (_scrollController
+                .position
+                .extentAfter >
+            _loadMoreThreshold) {
+          return;
+        }
+
+        unawaited(
+          _loadMore(),
+        );
+      },
+    );
+  }
+
+  // ============================================================
+  // FIRST PAGE / REFRESH
+  // ============================================================
 
   Future<void> _loadMessages({
     bool forceRefresh = false,
@@ -67,24 +203,55 @@ class _TelegramMessagesPageState
     final generation =
         ++_requestGeneration;
 
-    if (forceRefresh &&
-        _messages.isNotEmpty) {
+    /*
+     * Refresh invalida todas as páginas daquele
+     * grupo.
+     *
+     * Isso evita:
+     *
+     * página 1 nova
+     * +
+     * página 2 antiga vinda do cache
+     */
+    if (forceRefresh) {
+      _browseWorker.clearGroupMessages(
+        widget.group,
+      );
+    }
+
+    if (mounted) {
       setState(() {
-        _isRefreshing = true;
         _error = null;
-      });
-    } else {
-      setState(() {
-        _isLoading = true;
-        _error = null;
+
+        _loadMoreError = null;
+
+        _isLoadingMore = false;
+
+        _hasMore = true;
+
+        _nextOffsetId = 0;
+
+        if (forceRefresh &&
+            _messages.isNotEmpty) {
+          /*
+           * Mantemos as mensagens atuais
+           * visíveis enquanto atualizamos.
+           */
+          _isRefreshing = true;
+          _isLoading = false;
+        } else {
+          _isLoading = true;
+          _isRefreshing = false;
+        }
       });
     }
 
     try {
-      final messages =
+      final page =
           await _browseWorker.getMessages(
         widget.group,
-        limit: 50,
+        limit: _pageSize,
+        offsetId: 0,
         forceRefresh: forceRefresh,
       );
 
@@ -94,12 +261,56 @@ class _TelegramMessagesPageState
         return;
       }
 
+      final messages =
+          _deduplicateMessages(
+        page,
+      );
+
+      final nextOffset =
+          _findOldestMessageId(
+        page,
+      );
+
       setState(() {
         _messages = messages;
+
+        _nextOffsetId =
+            nextOffset;
+
+        /*
+         * Não usamos:
+         *
+         * page.length == _pageSize
+         *
+         * para definir hasMore.
+         *
+         * O parser pode ignorar alguns tipos
+         * de mensagens de serviço do Telegram.
+         *
+         * Por isso continuamos enquanto houver
+         * pelo menos uma mensagem válida.
+         *
+         * No fim real do histórico a próxima
+         * página retorna vazia.
+         */
+        _hasMore =
+            page.isNotEmpty &&
+            nextOffset > 0;
+
         _isLoading = false;
+
         _isRefreshing = false;
+
+        _isLoadingMore = false;
+
         _error = null;
+
+        _loadMoreError = null;
       });
+
+      _scheduleLoadMoreCheck(
+        generation,
+      );
     } catch (e) {
       if (!mounted ||
           generation !=
@@ -108,12 +319,235 @@ class _TelegramMessagesPageState
       }
 
       setState(() {
-        _error = e.toString();
+        _error =
+            e.toString();
+
         _isLoading = false;
+
         _isRefreshing = false;
+
+        _isLoadingMore = false;
       });
     }
   }
+
+  // ============================================================
+  // NEXT PAGE
+  // ============================================================
+
+  Future<void> _loadMore() async {
+    if (!mounted ||
+        _isLoading ||
+        _isRefreshing ||
+        _isLoadingMore ||
+        !_hasMore ||
+        _messages.isEmpty ||
+        _loadMoreError != null) {
+      return;
+    }
+
+    final offsetId =
+        _nextOffsetId;
+
+    if (offsetId <= 0) {
+      setState(() {
+        _hasMore = false;
+      });
+
+      return;
+    }
+
+    final generation =
+        _requestGeneration;
+
+    setState(() {
+      _isLoadingMore = true;
+
+      _loadMoreError = null;
+    });
+
+    try {
+      final page =
+          await _browseWorker.getMessages(
+        widget.group,
+        limit: _pageSize,
+        offsetId: offsetId,
+      );
+
+      if (!mounted ||
+          generation !=
+              _requestGeneration) {
+        return;
+      }
+
+      /*
+       * Página vazia significa que atingimos
+       * o início do histórico.
+       */
+      if (page.isEmpty) {
+        setState(() {
+          _isLoadingMore = false;
+
+          _hasMore = false;
+
+          _loadMoreError = null;
+        });
+
+        return;
+      }
+
+      final newOffset =
+          _findOldestMessageId(
+        page,
+      );
+
+      /*
+       * Proteção contra loop.
+       *
+       * Um cursor válido deve avançar sempre
+       * para IDs menores.
+       */
+      if (newOffset <= 0 ||
+          newOffset >= offsetId) {
+        setState(() {
+          _isLoadingMore = false;
+
+          _hasMore = false;
+
+          _loadMoreError = null;
+        });
+
+        return;
+      }
+
+      final existingIds =
+          _messages
+              .map(
+                (
+                  message,
+                ) =>
+                    message.id,
+              )
+              .toSet();
+
+      final newMessages =
+          <TelegramMessage>[];
+
+      for (final message
+          in page) {
+        if (!existingIds.add(
+          message.id,
+        )) {
+          continue;
+        }
+
+        newMessages.add(
+          message,
+        );
+      }
+
+      setState(() {
+        if (newMessages.isNotEmpty) {
+          _messages = [
+            ..._messages,
+            ...newMessages,
+          ];
+        }
+
+        /*
+         * O cursor avança mesmo se a página
+         * contiver somente itens duplicados.
+         *
+         * Isso evita solicitar eternamente
+         * o mesmo offset.
+         */
+        _nextOffsetId =
+            newOffset;
+
+        _isLoadingMore = false;
+
+        _hasMore = true;
+
+        _loadMoreError = null;
+      });
+
+      _scheduleLoadMoreCheck(
+        generation,
+      );
+    } catch (e) {
+      if (!mounted ||
+          generation !=
+              _requestGeneration) {
+        return;
+      }
+
+      setState(() {
+        _isLoadingMore = false;
+
+        _loadMoreError =
+            e.toString();
+      });
+    }
+  }
+
+  // ============================================================
+  // PAGINATION HELPERS
+  // ============================================================
+
+  List<TelegramMessage>
+      _deduplicateMessages(
+    List<TelegramMessage> messages,
+  ) {
+    final ids =
+        <int>{};
+
+    final result =
+        <TelegramMessage>[];
+
+    for (final message
+        in messages) {
+      if (!ids.add(
+        message.id,
+      )) {
+        continue;
+      }
+
+      result.add(
+        message,
+      );
+    }
+
+    return result;
+  }
+
+  int _findOldestMessageId(
+    List<TelegramMessage> messages,
+  ) {
+    int result =
+        0;
+
+    for (final message
+        in messages) {
+      final id =
+          message.id;
+
+      if (id <= 0) {
+        continue;
+      }
+
+      if (result == 0 ||
+          id < result) {
+        result =
+            id;
+      }
+    }
+
+    return result;
+  }
+
+  // ============================================================
+  // BUILD
+  // ============================================================
 
   @override
   Widget build(
@@ -129,7 +563,9 @@ class _TelegramMessagesPageState
           IconButton(
             tooltip: 'Refresh Messages',
             onPressed:
-                _isLoading || _isRefreshing
+                _isLoading ||
+                        _isRefreshing ||
+                        _isLoadingMore
                     ? null
                     : () {
                         _loadMessages(
@@ -160,7 +596,8 @@ class _TelegramMessagesPageState
         _messages.isEmpty) {
       return const Center(
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisSize:
+              MainAxisSize.min,
           children: [
             CircularProgressIndicator(),
             SizedBox(
@@ -178,11 +615,13 @@ class _TelegramMessagesPageState
         _messages.isEmpty) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(
+          padding:
+              const EdgeInsets.all(
             24,
           ),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
+            mainAxisSize:
+                MainAxisSize.min,
             children: [
               const Icon(
                 Icons.error_outline,
@@ -230,7 +669,8 @@ class _TelegramMessagesPageState
     if (_messages.isEmpty) {
       return const Center(
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisSize:
+              MainAxisSize.min,
           children: [
             Icon(
               Icons.chat_bubble_outline,
@@ -247,6 +687,11 @@ class _TelegramMessagesPageState
       );
     }
 
+    final showFooter =
+        _isLoadingMore ||
+        _loadMoreError != null ||
+        !_hasMore;
+
     return Column(
       children: [
         if (_isRefreshing)
@@ -256,11 +701,16 @@ class _TelegramMessagesPageState
 
         Expanded(
           child: ListView.separated(
-            cacheExtent: 200,
-            padding: const EdgeInsets.all(
+            controller:
+                _scrollController,
+            cacheExtent: 500,
+            padding:
+                const EdgeInsets.all(
               20,
             ),
-            itemCount: _messages.length,
+            itemCount:
+                _messages.length +
+                (showFooter ? 1 : 0),
             separatorBuilder:
                 (
               context,
@@ -274,6 +724,13 @@ class _TelegramMessagesPageState
               context,
               index,
             ) {
+              if (index ==
+                  _messages.length) {
+                return _buildPaginationFooter(
+                  context,
+                );
+              }
+
               final message =
                   _messages[index];
 
@@ -282,7 +739,8 @@ class _TelegramMessagesPageState
                   key: ValueKey<int>(
                     message.id,
                   ),
-                  message: message,
+                  message:
+                      message,
                   groupTitle:
                       widget.group.title,
                 ),
@@ -293,7 +751,154 @@ class _TelegramMessagesPageState
       ],
     );
   }
+
+  // ============================================================
+  // PAGINATION FOOTER
+  // ============================================================
+
+  Widget _buildPaginationFooter(
+    BuildContext context,
+  ) {
+    if (_isLoadingMore) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(
+          vertical: 24,
+        ),
+        child: Center(
+          child: Column(
+            mainAxisSize:
+                MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child:
+                    CircularProgressIndicator(
+                  strokeWidth: 2,
+                ),
+              ),
+              SizedBox(
+                height: 10,
+              ),
+              Text(
+                'Loading older messages...',
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_loadMoreError != null) {
+      return Padding(
+        padding:
+            const EdgeInsets.symmetric(
+          vertical: 20,
+        ),
+        child: Center(
+          child: Column(
+            mainAxisSize:
+                MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.error_outline,
+                color:
+                    Theme.of(context)
+                        .colorScheme
+                        .error,
+              ),
+              const SizedBox(
+                height: 8,
+              ),
+              Text(
+                'Could not load older messages.',
+                style:
+                    Theme.of(context)
+                        .textTheme
+                        .bodyMedium,
+              ),
+              const SizedBox(
+                height: 4,
+              ),
+              Text(
+                _loadMoreError!,
+                textAlign:
+                    TextAlign.center,
+                maxLines: 3,
+                overflow:
+                    TextOverflow.ellipsis,
+                style:
+                    Theme.of(context)
+                        .textTheme
+                        .bodySmall,
+              ),
+              const SizedBox(
+                height: 12,
+              ),
+              OutlinedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _loadMoreError =
+                        null;
+                  });
+
+                  unawaited(
+                    _loadMore(),
+                  );
+                },
+                icon: const Icon(
+                  Icons.refresh,
+                ),
+                label: const Text(
+                  'Try Again',
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (!_hasMore) {
+      return Padding(
+        padding:
+            const EdgeInsets.symmetric(
+          vertical: 24,
+        ),
+        child: Row(
+          mainAxisAlignment:
+              MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.done_all,
+              size: 18,
+              color:
+                  Theme.of(context)
+                      .colorScheme
+                      .onSurfaceVariant,
+            ),
+            const SizedBox(
+              width: 8,
+            ),
+            Text(
+              'No older messages.',
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .bodySmall,
+            ),
+          ],
+        ),
+      );
+    }
+
+    return const SizedBox.shrink();
+  }
 }
+
+// ============================================================
+// MESSAGE CARD
+// ============================================================
 
 class _MessageCard extends StatelessWidget {
   final TelegramMessage message;
@@ -312,7 +917,8 @@ class _MessageCard extends StatelessWidget {
   ) {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(
+        padding:
+            const EdgeInsets.all(
           16,
         ),
         child: Column(
@@ -342,8 +948,10 @@ class _MessageCard extends StatelessWidget {
                 key: ValueKey<String>(
                   '${message.id}_${message.media!.cacheKey}',
                 ),
-                media: message.media!,
-                groupTitle: groupTitle,
+                media:
+                    message.media!,
+                groupTitle:
+                    groupTitle,
               ),
             ],
           ],
@@ -369,7 +977,8 @@ class _MessageCard extends StatelessWidget {
         Expanded(
           child: Text(
             message.sender,
-            style: const TextStyle(
+            style:
+                const TextStyle(
               fontWeight:
                   FontWeight.bold,
             ),
@@ -381,9 +990,10 @@ class _MessageCard extends StatelessWidget {
             _formatDate(
               message.date!,
             ),
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall,
+            style:
+                Theme.of(context)
+                    .textTheme
+                    .bodySmall,
           ),
       ],
     );
@@ -398,7 +1008,9 @@ class _MessageCard extends StatelessWidget {
     String twoDigits(
       int value,
     ) =>
-        value.toString().padLeft(
+        value
+            .toString()
+            .padLeft(
               2,
               '0',
             );
@@ -410,6 +1022,10 @@ class _MessageCard extends StatelessWidget {
         '${twoDigits(local.minute)}';
   }
 }
+
+// ============================================================
+// MEDIA CARD
+// ============================================================
 
 class TelegramMediaCard
     extends StatefulWidget {
@@ -424,8 +1040,9 @@ class TelegramMediaCard
   });
 
   @override
-  State<TelegramMediaCard> createState() =>
-      _TelegramMediaCardState();
+  State<TelegramMediaCard>
+      createState() =>
+          _TelegramMediaCardState();
 }
 
 class _TelegramMediaCardState
@@ -443,9 +1060,11 @@ class _TelegramMediaCardState
       _downloadListenable;
 
   String? _previewPath;
+
   String? _previewError;
 
-  bool _isLoadingPreview = false;
+  bool _isLoadingPreview =
+      false;
 
   @override
   void initState() {
@@ -464,7 +1083,8 @@ class _TelegramMediaCardState
       );
 
       if (cached != null) {
-        _previewPath = cached;
+        _previewPath =
+            cached;
       } else {
         WidgetsBinding.instance
             .addPostFrameCallback(
@@ -487,13 +1107,17 @@ class _TelegramMediaCardState
     }
 
     setState(() {
-      _isLoadingPreview = true;
-      _previewError = null;
+      _isLoadingPreview =
+          true;
+
+      _previewError =
+          null;
     });
 
     try {
       final path =
-          await _previewManager.getPreview(
+          await _previewManager
+              .getPreview(
         widget.media,
       );
 
@@ -502,9 +1126,14 @@ class _TelegramMediaCardState
       }
 
       setState(() {
-        _previewPath = path;
-        _previewError = null;
-        _isLoadingPreview = false;
+        _previewPath =
+            path;
+
+        _previewError =
+            null;
+
+        _isLoadingPreview =
+            false;
       });
     } on TelegramPreviewCancelledException {
       if (!mounted) {
@@ -512,7 +1141,8 @@ class _TelegramMediaCardState
       }
 
       setState(() {
-        _isLoadingPreview = false;
+        _isLoadingPreview =
+            false;
       });
     } catch (e) {
       if (!mounted) {
@@ -520,15 +1150,19 @@ class _TelegramMediaCardState
       }
 
       setState(() {
-        _previewError = e.toString();
-        _isLoadingPreview = false;
+        _previewError =
+            e.toString();
+
+        _isLoadingPreview =
+            false;
       });
     }
   }
 
   void _enqueue() {
     _queue.enqueue(
-      media: widget.media,
+      media:
+          widget.media,
       groupTitle:
           widget.groupTitle,
     );
@@ -557,16 +1191,20 @@ class _TelegramMediaCardState
             task?.filePath;
 
         return Container(
-          width: double.infinity,
+          width:
+              double.infinity,
           padding:
               const EdgeInsets.all(
             14,
           ),
-          decoration: BoxDecoration(
-            border: Border.all(
-              color: Theme.of(context)
-                  .colorScheme
-                  .outlineVariant,
+          decoration:
+              BoxDecoration(
+            border:
+                Border.all(
+              color:
+                  Theme.of(context)
+                      .colorScheme
+                      .outlineVariant,
             ),
             borderRadius:
                 BorderRadius.circular(
@@ -657,17 +1295,21 @@ class _TelegramMediaCardState
                 _formatSize(
                   media.size,
                 ),
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall,
+                style:
+                    Theme.of(context)
+                        .textTheme
+                        .bodySmall,
               ),
 
-              if (media.mimeType.isNotEmpty)
+              if (media
+                  .mimeType
+                  .isNotEmpty)
                 Text(
                   media.mimeType,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall,
+                  style:
+                      Theme.of(context)
+                          .textTheme
+                          .bodySmall,
                 ),
             ],
           ),
@@ -682,7 +1324,8 @@ class _TelegramMediaCardState
   ) {
     if (task.isQueued) {
       return const Padding(
-        padding: EdgeInsets.only(
+        padding:
+            EdgeInsets.only(
           top: 14,
         ),
         child: Row(
@@ -704,7 +1347,8 @@ class _TelegramMediaCardState
 
     if (task.isDownloading) {
       return Padding(
-        padding: const EdgeInsets.only(
+        padding:
+            const EdgeInsets.only(
           top: 14,
         ),
         child: Column(
@@ -712,7 +1356,8 @@ class _TelegramMediaCardState
               CrossAxisAlignment.start,
           children: [
             LinearProgressIndicator(
-              value: task.progress,
+              value:
+                  task.progress,
             ),
 
             const SizedBox(
@@ -724,9 +1369,10 @@ class _TelegramMediaCardState
                   ? 'Downloading...'
                   : '${(task.progress! * 100).toStringAsFixed(0)}% '
                       '• ${_formatSize(task.receivedBytes)}',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall,
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .bodySmall,
             ),
           ],
         ),
@@ -735,16 +1381,19 @@ class _TelegramMediaCardState
 
     if (task.isFailed) {
       return Padding(
-        padding: const EdgeInsets.only(
+        padding:
+            const EdgeInsets.only(
           top: 14,
         ),
         child: Text(
           task.errorMessage ??
               'Download failed.',
-          style: TextStyle(
-            color: Theme.of(context)
-                .colorScheme
-                .error,
+          style:
+              TextStyle(
+            color:
+                Theme.of(context)
+                    .colorScheme
+                    .error,
           ),
         ),
       );
@@ -752,7 +1401,8 @@ class _TelegramMediaCardState
 
     if (task.isCompleted) {
       return const Padding(
-        padding: EdgeInsets.only(
+        padding:
+            EdgeInsets.only(
           top: 14,
         ),
         child: Row(
@@ -797,7 +1447,8 @@ class _TelegramMediaCardState
 
     if (task == null) {
       return FilledButton.icon(
-        onPressed: _enqueue,
+        onPressed:
+            _enqueue,
         icon: const Icon(
           Icons.add_to_queue,
         ),
@@ -808,8 +1459,9 @@ class _TelegramMediaCardState
     }
 
     if (task.isQueued) {
-      return OutlinedButton.icon(
-        onPressed: null,
+      return  OutlinedButton.icon(
+        onPressed:
+            null,
         icon: Icon(
           Icons.schedule,
         ),
@@ -820,8 +1472,9 @@ class _TelegramMediaCardState
     }
 
     if (task.isDownloading) {
-      return FilledButton.icon(
-        onPressed: null,
+      return  FilledButton.icon(
+        onPressed:
+            null,
         icon: SizedBox(
           width: 16,
           height: 16,
@@ -861,17 +1514,20 @@ class _TelegramMediaCardState
     if (_isLoadingPreview) {
       return Container(
         height: 180,
-        width: double.infinity,
+        width:
+            double.infinity,
         alignment:
             Alignment.center,
-        decoration: BoxDecoration(
+        decoration:
+            BoxDecoration(
           borderRadius:
               BorderRadius.circular(
             8,
           ),
-          color: Theme.of(context)
-              .colorScheme
-              .surfaceContainerHighest,
+          color:
+              Theme.of(context)
+                  .colorScheme
+                  .surfaceContainerHighest,
         ),
         child:
             const CircularProgressIndicator(),
@@ -893,9 +1549,12 @@ class _TelegramMediaCardState
             File(
               _previewPath!,
             ),
-            width: double.infinity,
-            fit: BoxFit.contain,
-            gaplessPlayback: true,
+            width:
+                double.infinity,
+            fit:
+                BoxFit.contain,
+            gaplessPlayback:
+                true,
             filterQuality:
                 FilterQuality.low,
             errorBuilder:
@@ -930,16 +1589,20 @@ class _TelegramMediaCardState
   ) {
     return Container(
       height: 140,
-      width: double.infinity,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
+      width:
+          double.infinity,
+      alignment:
+          Alignment.center,
+      decoration:
+          BoxDecoration(
         borderRadius:
             BorderRadius.circular(
           8,
         ),
-        color: Theme.of(context)
-            .colorScheme
-            .surfaceContainerHighest,
+        color:
+            Theme.of(context)
+                .colorScheme
+                .surfaceContainerHighest,
       ),
       child: Column(
         mainAxisSize:
@@ -967,9 +1630,14 @@ class _TelegramMediaCardState
       return 'Unknown size';
     }
 
-    const kb = 1024;
-    const mb = kb * 1024;
-    const gb = mb * 1024;
+    const kb =
+        1024;
+
+    const mb =
+        kb * 1024;
+
+    const gb =
+        mb * 1024;
 
     if (bytes >= gb) {
       return '${(bytes / gb).toStringAsFixed(2)} GB';
