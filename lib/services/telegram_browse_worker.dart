@@ -25,34 +25,41 @@ class TelegramBrowseWorker {
 
   List<TelegramGroup>? _groupsCache;
 
-  Future<List<TelegramGroup>>? _groupsInFlight;
+  Future<List<TelegramGroup>>?
+      _groupsInFlight;
 
-  final LinkedHashMap<String, List<TelegramMessage>>
-      _messagesCache =
-      LinkedHashMap<String, List<TelegramMessage>>();
+  final LinkedHashMap<
+      String,
+      List<TelegramMessage>> _messagesCache =
+      LinkedHashMap<
+          String,
+          List<TelegramMessage>>();
 
-  final Map<String, Future<List<TelegramMessage>>>
+  final Map<
+      String,
+      Future<List<TelegramMessage>>>
       _messagesInFlight =
-      <String, Future<List<TelegramMessage>>>{};
+      <String,
+          Future<List<TelegramMessage>>>{};
 
   Isolate? _isolate;
 
   SendPort? _commandPort;
 
   ReceivePort? _eventPort;
-
   ReceivePort? _errorPort;
-
   ReceivePort? _exitPort;
 
-  StreamSubscription<dynamic>? _eventSubscription;
+  StreamSubscription<dynamic>?
+      _eventSubscription;
 
-  StreamSubscription<dynamic>? _errorSubscription;
+  StreamSubscription<dynamic>?
+      _errorSubscription;
 
-  StreamSubscription<dynamic>? _exitSubscription;
+  StreamSubscription<dynamic>?
+      _exitSubscription;
 
   Future<void>? _startFuture;
-
   Future<void>? _resetFuture;
 
   Completer<void>? _readyCompleter;
@@ -65,11 +72,9 @@ class TelegramBrowseWorker {
       _pendingMessages =
       <int, _PendingMessagesRequest>{};
 
-  int _nextRequestId =
-      0;
+  int _nextRequestId = 0;
 
-  bool _disposed =
-      false;
+  bool _disposed = false;
 
   // ============================================================
   // GROUPS
@@ -83,7 +88,8 @@ class TelegramBrowseWorker {
           _groupsCache;
 
       if (cached != null) {
-        return Future<List<TelegramGroup>>.value(
+        return Future<
+            List<TelegramGroup>>.value(
           List<TelegramGroup>.from(
             cached,
           ),
@@ -98,10 +104,10 @@ class TelegramBrowseWorker {
       return existing;
     }
 
-    late final Future<List<TelegramGroup>> future;
+    late final Future<List<TelegramGroup>>
+        future;
 
-    future =
-        _executeGroups().then(
+    future = _executeGroups().then(
       (
         groups,
       ) {
@@ -159,14 +165,12 @@ class TelegramBrowseWorker {
       );
 
       if (cached != null) {
-        /*
-         * Remove + insere novamente para marcar
-         * este grupo como o mais recentemente usado.
-         */
+        // Marca este grupo como o mais recentemente usado.
         _messagesCache[key] =
             cached;
 
-        return Future<List<TelegramMessage>>.value(
+        return Future<
+            List<TelegramMessage>>.value(
           List<TelegramMessage>.from(
             cached,
           ),
@@ -181,14 +185,12 @@ class TelegramBrowseWorker {
       return existing;
     }
 
-    late final Future<List<TelegramMessage>> future;
+    late final Future<List<TelegramMessage>>
+        future;
 
-    future =
-        _executeMessages(
-      group:
-          group,
-      limit:
-          limit,
+    future = _executeMessages(
+      group: group,
+      limit: limit,
     ).then(
       (
         messages,
@@ -335,18 +337,14 @@ class TelegramBrowseWorker {
 
     _pendingGroups[requestId] =
         _PendingGroupsRequest(
-      completer:
-          completer,
-      timeout:
-          timeout,
+      completer: completer,
+      timeout: timeout,
     );
 
     commandPort.send(
       <String, dynamic>{
-        'type':
-            'groups',
-        'requestId':
-            requestId,
+        'type': 'groups',
+        'requestId': requestId,
       },
     );
 
@@ -400,11 +398,11 @@ class TelegramBrowseWorker {
         );
 
         /*
-         * Diferente do worker antigo, se uma chamada
-         * travar o worker não fica inutilizado para sempre.
+         * Se uma chamada travar,
+         * descartamos o isolate/socket.
          *
-         * O isolate/socket é descartado e a próxima chamada
-         * cria uma conexão limpa automaticamente.
+         * A próxima chamada cria uma
+         * conexão limpa automaticamente.
          */
         _scheduleReset(
           error,
@@ -414,22 +412,16 @@ class TelegramBrowseWorker {
 
     _pendingMessages[requestId] =
         _PendingMessagesRequest(
-      completer:
-          completer,
-      timeout:
-          timeout,
+      completer: completer,
+      timeout: timeout,
     );
 
     commandPort.send(
       <String, dynamic>{
-        'type':
-            'messages',
-        'requestId':
-            requestId,
-        'group':
-            group,
-        'limit':
-            limit,
+        'type': 'messages',
+        'requestId': requestId,
+        'group': group,
+        'limit': limit,
       },
     );
 
@@ -561,8 +553,7 @@ class TelegramBrowseWorker {
         eventPort.sendPort,
         debugName:
             'FabulariumTelegramBrowseWorker',
-        errorsAreFatal:
-            true,
+        errorsAreFatal: true,
         onError:
             errorPort.sendPort,
         onExit:
@@ -779,7 +770,8 @@ class TelegramBrowseWorker {
     final messages =
         <TelegramMessage>[];
 
-    for (final dynamic raw in rawMessages) {
+    for (final dynamic raw
+        in rawMessages) {
       if (raw is TelegramMessage) {
         messages.add(
           raw,
@@ -803,8 +795,7 @@ class TelegramBrowseWorker {
   ) {
     unawaited(
       reset(
-        reason:
-            reason,
+        reason: reason,
       ),
     );
   }
@@ -820,10 +811,10 @@ class TelegramBrowseWorker {
       return existing;
     }
 
-    late final Future<void> future;
+    late final Future<void>
+        future;
 
-    future =
-        _performReset(
+    future = _performReset(
       reason:
           reason ??
               const TelegramBrowseWorkerResetException(),
@@ -969,7 +960,7 @@ class TelegramBrowseWorker {
   }
 
   // ============================================================
-  // KEYS
+  // CACHE KEYS
   // ============================================================
 
   String _groupKey(
@@ -1000,8 +991,7 @@ class TelegramBrowseWorker {
 
     _commandPort?.send(
       <String, dynamic>{
-        'type':
-            'shutdown',
+        'type': 'shutdown',
       },
     );
 
@@ -1016,79 +1006,8 @@ class TelegramBrowseWorker {
           StateError(
         'Telegram browse worker disposed.',
       ),
-      clearCache:
-          true,
+      clearCache: true,
     );
-  }
-}
-
-// ============================================================
-// COMPATIBILITY FACADES
-//
-// Mantêm a API das telas atuais enquanto groups + messages
-// compartilham UM ÚNICO worker persistente.
-// ============================================================
-
-class TelegramGroupsWorker {
-  TelegramGroupsWorker._();
-
-  static final TelegramGroupsWorker instance =
-      TelegramGroupsWorker._();
-
-  final TelegramBrowseWorker _browse =
-      TelegramBrowseWorker.instance;
-
-  Future<List<TelegramGroup>> getGroups({
-    bool forceRefresh = false,
-  }) {
-    return _browse.getGroups(
-      forceRefresh:
-          forceRefresh,
-    );
-  }
-
-  void clearCache() {
-    _browse.clearGroupsCache();
-  }
-}
-
-class TelegramMessagesWorker {
-  TelegramMessagesWorker._();
-
-  static final TelegramMessagesWorker instance =
-      TelegramMessagesWorker._();
-
-  final TelegramBrowseWorker _browse =
-      TelegramBrowseWorker.instance;
-
-  Future<List<TelegramMessage>> getMessages(
-    TelegramGroup group, {
-    int limit = 50,
-    bool forceRefresh = false,
-  }) {
-    return _browse.getMessages(
-      group,
-      limit:
-          limit,
-      forceRefresh:
-          forceRefresh,
-    );
-  }
-
-  void clearGroup(
-    TelegramGroup group,
-  ) {
-    _browse.clearGroupMessages(
-      group,
-    );
-  }
-
-  void clearCache() {
-    _browse.clearMessagesCache();
-  }
-
-  Future<void> dispose() {
-    return _browse.dispose();
   }
 }
 
@@ -1147,8 +1066,7 @@ Future<void> _telegramBrowseWorkerEntryPoint(
 
     eventPort.send(
       <String, dynamic>{
-        'type':
-            'ready',
+        'type': 'ready',
         'commandPort':
             commandPort.sendPort,
       },
@@ -1242,11 +1160,11 @@ Future<void> _telegramBrowseWorkerEntryPoint(
 
         try {
           final messages =
-              await TelegramService.instance
+              await TelegramService
+                  .instance
                   .getMessages(
             group,
-            limit:
-                limit,
+            limit: limit,
           );
 
           eventPort.send(
@@ -1301,25 +1219,22 @@ Future<void> _telegramBrowseWorkerEntryPoint(
   }
 }
 
-Future<List<Map<String, dynamic>>> _loadGroups(
+Future<List<Map<String, dynamic>>>
+    _loadGroups(
   dynamic client,
 ) async {
   final response =
       await client.messages.getDialogs(
-    excludePinned:
-        false,
+    excludePinned: false,
     offsetDate:
         DateTime.fromMillisecondsSinceEpoch(
       0,
     ),
-    offsetId:
-        0,
+    offsetId: 0,
     offsetPeer:
         const t.InputPeerEmpty(),
-    limit:
-        100,
-    hash:
-        0,
+    limit: 100,
+    hash: 0,
   );
 
   final error =
@@ -1389,14 +1304,12 @@ Future<List<Map<String, dynamic>>> _loadGroups(
 
     try {
       megagroup =
-          chat.megagroup ==
-              true;
+          chat.megagroup == true;
     } catch (_) {}
 
     try {
       gigagroup =
-          chat.gigagroup ==
-              true;
+          chat.gigagroup == true;
     } catch (_) {}
 
     if (!megagroup &&

@@ -8,13 +8,12 @@ import '../models/telegram_group.dart';
 import '../models/telegram_media.dart';
 import '../models/telegram_message.dart';
 import '../services/download_queue_service.dart';
+import '../services/telegram_browse_worker.dart';
 import '../services/telegram_file_service.dart';
-import '../services/telegram_messages_worker.dart';
 import '../services/telegram_preview_manager.dart';
 import '../widgets/download_queue_button.dart';
 
-class TelegramMessagesPage
-    extends StatefulWidget {
+class TelegramMessagesPage extends StatefulWidget {
   final TelegramGroup group;
 
   const TelegramMessagesPage({
@@ -23,41 +22,32 @@ class TelegramMessagesPage
   });
 
   @override
-  State<TelegramMessagesPage>
-      createState() =>
-          _TelegramMessagesPageState();
+  State<TelegramMessagesPage> createState() =>
+      _TelegramMessagesPageState();
 }
 
 class _TelegramMessagesPageState
     extends State<TelegramMessagesPage> {
-  final TelegramMessagesWorker
-      _messagesWorker =
-      TelegramMessagesWorker.instance;
+  final TelegramBrowseWorker _browseWorker =
+      TelegramBrowseWorker.instance;
 
-  final TelegramPreviewManager
-      _previewManager =
+  final TelegramPreviewManager _previewManager =
       TelegramPreviewManager.instance;
 
-  bool _isLoading =
-      true;
-
-  bool _isRefreshing =
-      false;
+  bool _isLoading = true;
+  bool _isRefreshing = false;
 
   String? _error;
 
-  List<TelegramMessage> _messages =
-      [];
+  List<TelegramMessage> _messages = [];
 
-  int _requestGeneration =
-      0;
+  int _requestGeneration = 0;
 
   @override
   void initState() {
     super.initState();
 
-    _previewManager
-        .prepareForScreen();
+    _previewManager.prepareForScreen();
 
     _loadMessages();
   }
@@ -66,8 +56,7 @@ class _TelegramMessagesPageState
   void dispose() {
     _requestGeneration++;
 
-    _previewManager
-        .cancelPending();
+    _previewManager.cancelPending();
 
     super.dispose();
   }
@@ -81,31 +70,22 @@ class _TelegramMessagesPageState
     if (forceRefresh &&
         _messages.isNotEmpty) {
       setState(() {
-        _isRefreshing =
-            true;
-
-        _error =
-            null;
+        _isRefreshing = true;
+        _error = null;
       });
     } else {
       setState(() {
-        _isLoading =
-            true;
-
-        _error =
-            null;
+        _isLoading = true;
+        _error = null;
       });
     }
 
     try {
       final messages =
-          await _messagesWorker
-              .getMessages(
+          await _browseWorker.getMessages(
         widget.group,
-        limit:
-            50,
-        forceRefresh:
-            forceRefresh,
+        limit: 50,
+        forceRefresh: forceRefresh,
       );
 
       if (!mounted ||
@@ -115,17 +95,10 @@ class _TelegramMessagesPageState
       }
 
       setState(() {
-        _messages =
-            messages;
-
-        _isLoading =
-            false;
-
-        _isRefreshing =
-            false;
-
-        _error =
-            null;
+        _messages = messages;
+        _isLoading = false;
+        _isRefreshing = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted ||
@@ -135,14 +108,9 @@ class _TelegramMessagesPageState
       }
 
       setState(() {
-        _error =
-            e.toString();
-
-        _isLoading =
-            false;
-
-        _isRefreshing =
-            false;
+        _error = e.toString();
+        _isLoading = false;
+        _isRefreshing = false;
       });
     }
   }
@@ -152,48 +120,38 @@ class _TelegramMessagesPageState
     BuildContext context,
   ) {
     return Scaffold(
-      appBar:
-          AppBar(
-        title:
-            Text(
+      appBar: AppBar(
+        title: Text(
           widget.group.title,
         ),
         actions: [
           const DownloadQueueButton(),
           IconButton(
-            tooltip:
-                'Refresh Messages',
+            tooltip: 'Refresh Messages',
             onPressed:
-                _isLoading ||
-                        _isRefreshing
+                _isLoading || _isRefreshing
                     ? null
                     : () {
                         _loadMessages(
-                          forceRefresh:
-                              true,
+                          forceRefresh: true,
                         );
                       },
-            icon:
-                _isRefreshing
-                    ? const SizedBox(
-                        width:
-                            18,
-                        height:
-                            18,
-                        child:
-                            CircularProgressIndicator(
-                          strokeWidth:
-                              2,
-                        ),
-                      )
-                    : const Icon(
-                        Icons.refresh,
-                      ),
+            icon: _isRefreshing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child:
+                        CircularProgressIndicator(
+                      strokeWidth: 2,
+                    ),
+                  )
+                : const Icon(
+                    Icons.refresh,
+                  ),
           ),
         ],
       ),
-      body:
-          _buildBody(),
+      body: _buildBody(),
     );
   }
 
@@ -201,15 +159,12 @@ class _TelegramMessagesPageState
     if (_isLoading &&
         _messages.isEmpty) {
       return const Center(
-        child:
-            Column(
-          mainAxisSize:
-              MainAxisSize.min,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             CircularProgressIndicator(),
             SizedBox(
-              height:
-                  16,
+              height: 16,
             ),
             Text(
               'Loading messages...',
@@ -222,36 +177,28 @@ class _TelegramMessagesPageState
     if (_error != null &&
         _messages.isEmpty) {
       return Center(
-        child:
-            Padding(
-          padding:
-              const EdgeInsets.all(
+        child: Padding(
+          padding: const EdgeInsets.all(
             24,
           ),
-          child:
-              Column(
-            mainAxisSize:
-                MainAxisSize.min,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(
                 Icons.error_outline,
-                size:
-                    64,
+                size: 64,
               ),
               const SizedBox(
-                height:
-                    16,
+                height: 16,
               ),
               Text(
                 'Error loading messages',
-                style:
-                    Theme.of(context)
-                        .textTheme
-                        .titleLarge,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleLarge,
               ),
               const SizedBox(
-                height:
-                    12,
+                height: 12,
               ),
               Text(
                 _error!,
@@ -259,23 +206,18 @@ class _TelegramMessagesPageState
                     TextAlign.center,
               ),
               const SizedBox(
-                height:
-                    20,
+                height: 20,
               ),
               FilledButton.icon(
-                onPressed:
-                    () {
+                onPressed: () {
                   _loadMessages(
-                    forceRefresh:
-                        true,
+                    forceRefresh: true,
                   );
                 },
-                icon:
-                    const Icon(
+                icon: const Icon(
                   Icons.refresh,
                 ),
-                label:
-                    const Text(
+                label: const Text(
                   'Try Again',
                 ),
               ),
@@ -287,19 +229,15 @@ class _TelegramMessagesPageState
 
     if (_messages.isEmpty) {
       return const Center(
-        child:
-            Column(
-          mainAxisSize:
-              MainAxisSize.min,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
               Icons.chat_bubble_outline,
-              size:
-                  72,
+              size: 72,
             ),
             SizedBox(
-              height:
-                  16,
+              height: 16,
             ),
             Text(
               'No messages found.',
@@ -313,28 +251,23 @@ class _TelegramMessagesPageState
       children: [
         if (_isRefreshing)
           const LinearProgressIndicator(
-            minHeight:
-                2,
+            minHeight: 2,
           ),
+
         Expanded(
-          child:
-              ListView.separated(
-            cacheExtent:
-                200,
-            padding:
-                const EdgeInsets.all(
+          child: ListView.separated(
+            cacheExtent: 200,
+            padding: const EdgeInsets.all(
               20,
             ),
-            itemCount:
-                _messages.length,
+            itemCount: _messages.length,
             separatorBuilder:
                 (
               context,
               index,
             ) =>
                     const SizedBox(
-              height:
-                  12,
+              height: 12,
             ),
             itemBuilder:
                 (
@@ -345,14 +278,11 @@ class _TelegramMessagesPageState
                   _messages[index];
 
               return RepaintBoundary(
-                child:
-                    _MessageCard(
-                  key:
-                      ValueKey<int>(
+                child: _MessageCard(
+                  key: ValueKey<int>(
                     message.id,
                   ),
-                  message:
-                      message,
+                  message: message,
                   groupTitle:
                       widget.group.title,
                 ),
@@ -365,8 +295,7 @@ class _TelegramMessagesPageState
   }
 }
 
-class _MessageCard
-    extends StatelessWidget {
+class _MessageCard extends StatelessWidget {
   final TelegramMessage message;
 
   final String groupTitle;
@@ -382,47 +311,39 @@ class _MessageCard
     BuildContext context,
   ) {
     return Card(
-      child:
-          Padding(
-        padding:
-            const EdgeInsets.all(
+      child: Padding(
+        padding: const EdgeInsets.all(
           16,
         ),
-        child:
-            Column(
+        child: Column(
           crossAxisAlignment:
               CrossAxisAlignment.start,
           children: [
             _buildHeader(
               context,
             ),
+
             if (message.text
                 .trim()
                 .isNotEmpty) ...[
               const SizedBox(
-                height:
-                    12,
+                height: 12,
               ),
               SelectableText(
                 message.text,
               ),
             ],
-            if (message.media !=
-                null) ...[
+
+            if (message.media != null) ...[
               const SizedBox(
-                height:
-                    14,
+                height: 14,
               ),
               TelegramMediaCard(
-                key:
-                    ValueKey<String>(
-                  '${message.id}_'
-                  '${message.media!.cacheKey}',
+                key: ValueKey<String>(
+                  '${message.id}_${message.media!.cacheKey}',
                 ),
-                media:
-                    message.media!,
-                groupTitle:
-                    groupTitle,
+                media: message.media!,
+                groupTitle: groupTitle,
               ),
             ],
           ],
@@ -438,34 +359,31 @@ class _MessageCard
       children: [
         const Icon(
           Icons.person_outline,
-          size:
-              18,
+          size: 18,
         ),
+
         const SizedBox(
-          width:
-              8,
+          width: 8,
         ),
+
         Expanded(
-          child:
-              Text(
+          child: Text(
             message.sender,
-            style:
-                const TextStyle(
+            style: const TextStyle(
               fontWeight:
                   FontWeight.bold,
             ),
           ),
         ),
-        if (message.date !=
-            null)
+
+        if (message.date != null)
           Text(
             _formatDate(
               message.date!,
             ),
-            style:
-                Theme.of(context)
-                    .textTheme
-                    .bodySmall,
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall,
           ),
       ],
     );
@@ -480,9 +398,7 @@ class _MessageCard
     String twoDigits(
       int value,
     ) =>
-        value
-            .toString()
-            .padLeft(
+        value.toString().padLeft(
               2,
               '0',
             );
@@ -508,9 +424,8 @@ class TelegramMediaCard
   });
 
   @override
-  State<TelegramMediaCard>
-      createState() =>
-          _TelegramMediaCardState();
+  State<TelegramMediaCard> createState() =>
+      _TelegramMediaCardState();
 }
 
 class _TelegramMediaCardState
@@ -521,19 +436,16 @@ class _TelegramMediaCardState
   final DownloadQueueService _queue =
       DownloadQueueService.instance;
 
-  final TelegramPreviewManager
-      _previewManager =
+  final TelegramPreviewManager _previewManager =
       TelegramPreviewManager.instance;
 
   late final ValueListenable<int>
       _downloadListenable;
 
   String? _previewPath;
-
   String? _previewError;
 
-  bool _isLoadingPreview =
-      false;
+  bool _isLoadingPreview = false;
 
   @override
   void initState() {
@@ -547,14 +459,12 @@ class _TelegramMediaCardState
 
     if (widget.media.hasPreview) {
       final cached =
-          _previewManager
-              .cachedPath(
+          _previewManager.cachedPath(
         widget.media,
       );
 
       if (cached != null) {
-        _previewPath =
-            cached;
+        _previewPath = cached;
       } else {
         WidgetsBinding.instance
             .addPostFrameCallback(
@@ -577,17 +487,13 @@ class _TelegramMediaCardState
     }
 
     setState(() {
-      _isLoadingPreview =
-          true;
-
-      _previewError =
-          null;
+      _isLoadingPreview = true;
+      _previewError = null;
     });
 
     try {
       final path =
-          await _previewManager
-              .getPreview(
+          await _previewManager.getPreview(
         widget.media,
       );
 
@@ -596,14 +502,9 @@ class _TelegramMediaCardState
       }
 
       setState(() {
-        _previewPath =
-            path;
-
-        _previewError =
-            null;
-
-        _isLoadingPreview =
-            false;
+        _previewPath = path;
+        _previewError = null;
+        _isLoadingPreview = false;
       });
     } on TelegramPreviewCancelledException {
       if (!mounted) {
@@ -611,8 +512,7 @@ class _TelegramMediaCardState
       }
 
       setState(() {
-        _isLoadingPreview =
-            false;
+        _isLoadingPreview = false;
       });
     } catch (e) {
       if (!mounted) {
@@ -620,19 +520,15 @@ class _TelegramMediaCardState
       }
 
       setState(() {
-        _previewError =
-            e.toString();
-
-        _isLoadingPreview =
-            false;
+        _previewError = e.toString();
+        _isLoadingPreview = false;
       });
     }
   }
 
   void _enqueue() {
     _queue.enqueue(
-      media:
-          widget.media,
+      media: widget.media,
       groupTitle:
           widget.groupTitle,
     );
@@ -661,28 +557,23 @@ class _TelegramMediaCardState
             task?.filePath;
 
         return Container(
-          width:
-              double.infinity,
+          width: double.infinity,
           padding:
               const EdgeInsets.all(
             14,
           ),
-          decoration:
-              BoxDecoration(
-            border:
-                Border.all(
-              color:
-                  Theme.of(context)
-                      .colorScheme
-                      .outlineVariant,
+          decoration: BoxDecoration(
+            border: Border.all(
+              color: Theme.of(context)
+                  .colorScheme
+                  .outlineVariant,
             ),
             borderRadius:
                 BorderRadius.circular(
               12,
             ),
           ),
-          child:
-              Column(
+          child: Column(
             crossAxisAlignment:
                 CrossAxisAlignment.start,
             children: [
@@ -690,23 +581,26 @@ class _TelegramMediaCardState
                 _buildPreview(
                   context,
                 ),
+
               if (widget.media.hasPreview)
                 const SizedBox(
-                  height:
-                      14,
+                  height: 14,
                 ),
+
               _buildFileInfo(
                 context,
               ),
+
               if (task != null)
                 _buildTaskStatus(
                   context,
                   task,
                 ),
+
               const SizedBox(
-                height:
-                    14,
+                height: 14,
               ),
+
               _buildAction(
                 task,
                 downloadedPath,
@@ -731,23 +625,21 @@ class _TelegramMediaCardState
               ? Icons.image_outlined
               : Icons
                   .insert_drive_file_outlined,
-          size:
-              30,
+          size: 30,
         ),
+
         const SizedBox(
-          width:
-              12,
+          width: 12,
         ),
+
         Expanded(
-          child:
-              Column(
+          child: Column(
             crossAxisAlignment:
                 CrossAxisAlignment.start,
             children: [
               Text(
                 media.fileName,
-                maxLines:
-                    2,
+                maxLines: 2,
                 overflow:
                     TextOverflow.ellipsis,
                 style:
@@ -756,26 +648,26 @@ class _TelegramMediaCardState
                       FontWeight.bold,
                 ),
               ),
+
               const SizedBox(
-                height:
-                    4,
+                height: 4,
               ),
+
               Text(
                 _formatSize(
                   media.size,
                 ),
-                style:
-                    Theme.of(context)
-                        .textTheme
-                        .bodySmall,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall,
               ),
+
               if (media.mimeType.isNotEmpty)
                 Text(
                   media.mimeType,
-                  style:
-                      Theme.of(context)
-                          .textTheme
-                          .bodySmall,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall,
                 ),
             ],
           ),
@@ -790,22 +682,17 @@ class _TelegramMediaCardState
   ) {
     if (task.isQueued) {
       return const Padding(
-        padding:
-            EdgeInsets.only(
-          top:
-              14,
+        padding: EdgeInsets.only(
+          top: 14,
         ),
-        child:
-            Row(
+        child: Row(
           children: [
             Icon(
               Icons.schedule,
-              size:
-                  18,
+              size: 18,
             ),
             SizedBox(
-              width:
-                  8,
+              width: 8,
             ),
             Text(
               'Waiting in download queue',
@@ -817,34 +704,29 @@ class _TelegramMediaCardState
 
     if (task.isDownloading) {
       return Padding(
-        padding:
-            const EdgeInsets.only(
-          top:
-              14,
+        padding: const EdgeInsets.only(
+          top: 14,
         ),
-        child:
-            Column(
+        child: Column(
           crossAxisAlignment:
               CrossAxisAlignment.start,
           children: [
             LinearProgressIndicator(
-              value:
-                  task.progress,
+              value: task.progress,
             ),
+
             const SizedBox(
-              height:
-                  6,
+              height: 6,
             ),
+
             Text(
-              task.progress ==
-                      null
+              task.progress == null
                   ? 'Downloading...'
                   : '${(task.progress! * 100).toStringAsFixed(0)}% '
                       '• ${_formatSize(task.receivedBytes)}',
-              style:
-                  Theme.of(context)
-                      .textTheme
-                      .bodySmall,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall,
             ),
           ],
         ),
@@ -853,21 +735,16 @@ class _TelegramMediaCardState
 
     if (task.isFailed) {
       return Padding(
-        padding:
-            const EdgeInsets.only(
-          top:
-              14,
+        padding: const EdgeInsets.only(
+          top: 14,
         ),
-        child:
-            Text(
+        child: Text(
           task.errorMessage ??
               'Download failed.',
-          style:
-              TextStyle(
-            color:
-                Theme.of(context)
-                    .colorScheme
-                    .error,
+          style: TextStyle(
+            color: Theme.of(context)
+                .colorScheme
+                .error,
           ),
         ),
       );
@@ -875,22 +752,17 @@ class _TelegramMediaCardState
 
     if (task.isCompleted) {
       return const Padding(
-        padding:
-            EdgeInsets.only(
-          top:
-              14,
+        padding: EdgeInsets.only(
+          top: 14,
         ),
-        child:
-            Row(
+        child: Row(
           children: [
             Icon(
               Icons.check_circle_outline,
-              size:
-                  18,
+              size: 18,
             ),
             SizedBox(
-              width:
-                  8,
+              width: 8,
             ),
             Text(
               'Download completed',
@@ -907,21 +779,17 @@ class _TelegramMediaCardState
     DownloadTask? task,
     String? downloadedPath,
   ) {
-    if (downloadedPath !=
-        null) {
+    if (downloadedPath != null) {
       return FilledButton.icon(
-        onPressed:
-            () {
+        onPressed: () {
           _files.showFileInExplorer(
             downloadedPath,
           );
         },
-        icon:
-            const Icon(
+        icon: const Icon(
           Icons.folder_open,
         ),
-        label:
-            const Text(
+        label: const Text(
           'Show in Folder',
         ),
       );
@@ -929,14 +797,11 @@ class _TelegramMediaCardState
 
     if (task == null) {
       return FilledButton.icon(
-        onPressed:
-            _enqueue,
-        icon:
-            const Icon(
+        onPressed: _enqueue,
+        icon: const Icon(
           Icons.add_to_queue,
         ),
-        label:
-            const Text(
+        label: const Text(
           'Add to Download Queue',
         ),
       );
@@ -944,14 +809,11 @@ class _TelegramMediaCardState
 
     if (task.isQueued) {
       return OutlinedButton.icon(
-        onPressed:
-            null,
-        icon:
-            const Icon(
+        onPressed: null,
+        icon: Icon(
           Icons.schedule,
         ),
-        label:
-            const Text(
+        label: Text(
           'Queued',
         ),
       );
@@ -959,22 +821,16 @@ class _TelegramMediaCardState
 
     if (task.isDownloading) {
       return FilledButton.icon(
-        onPressed:
-            null,
-        icon:
-            const SizedBox(
-          width:
-              16,
-          height:
-              16,
+        onPressed: null,
+        icon: SizedBox(
+          width: 16,
+          height: 16,
           child:
               CircularProgressIndicator(
-            strokeWidth:
-                2,
+            strokeWidth: 2,
           ),
         ),
-        label:
-            const Text(
+        label: Text(
           'Downloading',
         ),
       );
@@ -982,18 +838,15 @@ class _TelegramMediaCardState
 
     if (task.isFailed) {
       return FilledButton.icon(
-        onPressed:
-            () {
+        onPressed: () {
           _queue.retry(
             task,
           );
         },
-        icon:
-            const Icon(
+        icon: const Icon(
           Icons.refresh,
         ),
-        label:
-            const Text(
+        label: const Text(
           'Retry Download',
         ),
       );
@@ -1007,22 +860,18 @@ class _TelegramMediaCardState
   ) {
     if (_isLoadingPreview) {
       return Container(
-        height:
-            180,
-        width:
-            double.infinity,
+        height: 180,
+        width: double.infinity,
         alignment:
             Alignment.center,
-        decoration:
-            BoxDecoration(
+        decoration: BoxDecoration(
           borderRadius:
               BorderRadius.circular(
             8,
           ),
-          color:
-              Theme.of(context)
-                  .colorScheme
-                  .surfaceContainerHighest,
+          color: Theme.of(context)
+              .colorScheme
+              .surfaceContainerHighest,
         ),
         child:
             const CircularProgressIndicator(),
@@ -1035,24 +884,18 @@ class _TelegramMediaCardState
             BorderRadius.circular(
           8,
         ),
-        child:
-            ConstrainedBox(
+        child: ConstrainedBox(
           constraints:
               const BoxConstraints(
-            maxHeight:
-                420,
+            maxHeight: 420,
           ),
-          child:
-              Image.file(
+          child: Image.file(
             File(
               _previewPath!,
             ),
-            width:
-                double.infinity,
-            fit:
-                BoxFit.contain,
-            gaplessPlayback:
-                true,
+            width: double.infinity,
+            fit: BoxFit.contain,
+            gaplessPlayback: true,
             filterQuality:
                 FilterQuality.low,
             errorBuilder:
@@ -1086,36 +929,28 @@ class _TelegramMediaCardState
     String text,
   ) {
     return Container(
-      height:
-          140,
-      width:
-          double.infinity,
-      alignment:
-          Alignment.center,
-      decoration:
-          BoxDecoration(
+      height: 140,
+      width: double.infinity,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
         borderRadius:
             BorderRadius.circular(
           8,
         ),
-        color:
-            Theme.of(context)
-                .colorScheme
-                .surfaceContainerHighest,
+        color: Theme.of(context)
+            .colorScheme
+            .surfaceContainerHighest,
       ),
-      child:
-          Column(
+      child: Column(
         mainAxisSize:
             MainAxisSize.min,
         children: [
           const Icon(
             Icons.broken_image_outlined,
-            size:
-                36,
+            size: 36,
           ),
           const SizedBox(
-            height:
-                8,
+            height: 8,
           ),
           Text(
             text,
@@ -1132,14 +967,9 @@ class _TelegramMediaCardState
       return 'Unknown size';
     }
 
-    const kb =
-        1024;
-
-    const mb =
-        kb * 1024;
-
-    const gb =
-        mb * 1024;
+    const kb = 1024;
+    const mb = kb * 1024;
+    const gb = mb * 1024;
 
     if (bytes >= gb) {
       return '${(bytes / gb).toStringAsFixed(2)} GB';

@@ -1,43 +1,33 @@
 import 'package:flutter/material.dart';
 
 import '../models/telegram_group.dart';
-import '../services/telegram_groups_worker.dart';
+import '../services/telegram_browse_worker.dart';
 import 'telegram_messages_page.dart';
 
-class TelegramGroupsPage
-    extends StatefulWidget {
+class TelegramGroupsPage extends StatefulWidget {
   const TelegramGroupsPage({
     super.key,
   });
 
   @override
-  State<TelegramGroupsPage>
-      createState() =>
-          _TelegramGroupsPageState();
+  State<TelegramGroupsPage> createState() =>
+      _TelegramGroupsPageState();
 }
 
-class _TelegramGroupsPageState
-    extends State<TelegramGroupsPage> {
-  final TelegramGroupsWorker
-      _groupsWorker =
-      TelegramGroupsWorker.instance;
+class _TelegramGroupsPageState extends State<TelegramGroupsPage> {
+  final TelegramBrowseWorker _browseWorker =
+      TelegramBrowseWorker.instance;
 
-  bool _isLoading =
-      true;
-
-  bool _isRefreshing =
-      false;
+  bool _isLoading = true;
+  bool _isRefreshing = false;
 
   String? _error;
 
-  List<TelegramGroup> _groups =
-      [];
+  List<TelegramGroup> _groups = [];
 
-  String _searchQuery =
-      '';
+  String _searchQuery = '';
 
-  final TextEditingController
-      _searchController =
+  final TextEditingController _searchController =
       TextEditingController();
 
   @override
@@ -69,9 +59,7 @@ class _TelegramGroupsPageState
 
     setState(() {
       _searchQuery =
-          _searchController.text
-              .trim()
-              .toLowerCase();
+          _searchController.text.trim().toLowerCase();
     });
   }
 
@@ -84,37 +72,19 @@ class _TelegramGroupsPageState
 
     if (forceRefresh) {
       setState(() {
-        _isRefreshing =
-            true;
-
-        _error =
-            null;
+        _isRefreshing = true;
+        _error = null;
       });
     } else {
       setState(() {
-        _isLoading =
-            true;
-
-        _error =
-            null;
+        _isLoading = true;
+        _error = null;
       });
     }
 
     try {
-      /*
-       * Primeira chamada:
-       *
-       * Telegram em isolate separado.
-       *
-       * Próximas chamadas:
-       *
-       * cache instantâneo.
-       */
-      final groups =
-          await _groupsWorker
-              .getGroups(
-        forceRefresh:
-            forceRefresh,
+      final groups = await _browseWorker.getGroups(
+        forceRefresh: forceRefresh,
       );
 
       if (!mounted) {
@@ -122,14 +92,10 @@ class _TelegramGroupsPageState
       }
 
       setState(() {
-        _groups =
-            groups;
-
-        _isLoading =
-            false;
-
-        _isRefreshing =
-            false;
+        _groups = groups;
+        _isLoading = false;
+        _isRefreshing = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted) {
@@ -137,32 +103,23 @@ class _TelegramGroupsPageState
       }
 
       setState(() {
-        _error =
-            e.toString();
-
-        _isLoading =
-            false;
-
-        _isRefreshing =
-            false;
+        _error = e.toString();
+        _isLoading = false;
+        _isRefreshing = false;
       });
     }
   }
 
-  List<TelegramGroup>
-      get _filteredGroups {
+  List<TelegramGroup> get _filteredGroups {
     if (_searchQuery.isEmpty) {
       return _groups;
     }
 
     return _groups
         .where(
-          (group) =>
-              group.title
-                  .toLowerCase()
-                  .contains(
-                    _searchQuery,
-                  ),
+          (group) => group.title.toLowerCase().contains(
+                _searchQuery,
+              ),
         )
         .toList();
   }
@@ -172,11 +129,8 @@ class _TelegramGroupsPageState
   ) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder:
-            (_) =>
-                TelegramMessagesPage(
-          group:
-              group,
+        builder: (_) => TelegramMessagesPage(
+          group: group,
         ),
       ),
     );
@@ -184,8 +138,7 @@ class _TelegramGroupsPageState
 
   Future<void> _refresh() async {
     await _loadGroups(
-      forceRefresh:
-          true,
+      forceRefresh: true,
     );
   }
 
@@ -194,76 +147,52 @@ class _TelegramGroupsPageState
     BuildContext context,
   ) {
     return Scaffold(
-      appBar:
-          AppBar(
-        title:
-            const Text(
+      appBar: AppBar(
+        title: const Text(
           'Telegram Groups',
         ),
         actions: [
           if (_isRefreshing)
             const Padding(
-              padding:
-                  EdgeInsets.symmetric(
-                horizontal:
-                    18,
+              padding: EdgeInsets.symmetric(
+                horizontal: 18,
               ),
-              child:
-                  Center(
-                child:
-                    SizedBox(
-                  width:
-                      18,
-                  height:
-                      18,
-                  child:
-                      CircularProgressIndicator(
-                    strokeWidth:
-                        2,
+              child: Center(
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
                   ),
                 ),
               ),
             )
           else
             IconButton(
-              tooltip:
-                  'Refresh',
-              onPressed:
-                  _isLoading
-                      ? null
-                      : _refresh,
-              icon:
-                  const Icon(
+              tooltip: 'Refresh',
+              onPressed: _isLoading
+                  ? null
+                  : _refresh,
+              icon: const Icon(
                 Icons.refresh,
               ),
             ),
         ],
       ),
-      body:
-          _buildBody(),
+      body: _buildBody(),
     );
   }
 
   Widget _buildBody() {
-    /*
-     * Loading somente quando ainda
-     * não existe nenhuma lista.
-     */
-    if (_isLoading &&
-        _groups.isEmpty) {
+    if (_isLoading && _groups.isEmpty) {
       return const Center(
-        child:
-            Column(
-          mainAxisSize:
-              MainAxisSize.min,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             CircularProgressIndicator(),
-
             SizedBox(
-              height:
-                  16,
+              height: 16,
             ),
-
             Text(
               'Loading Telegram groups...',
             ),
@@ -272,69 +201,48 @@ class _TelegramGroupsPageState
       );
     }
 
-    if (_error != null &&
-        _groups.isEmpty) {
+    if (_error != null && _groups.isEmpty) {
       return Center(
-        child:
-            Padding(
-          padding:
-              const EdgeInsets.all(
+        child: Padding(
+          padding: const EdgeInsets.all(
             24,
           ),
-          child:
-              Column(
-            mainAxisSize:
-                MainAxisSize.min,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(
                 Icons.error_outline,
-                size:
-                    64,
+                size: 64,
               ),
-
               const SizedBox(
-                height:
-                    16,
+                height: 16,
               ),
-
               Text(
                 'Error loading Telegram groups',
-                style:
-                    Theme.of(context)
-                        .textTheme
-                        .titleLarge,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleLarge,
               ),
-
               const SizedBox(
-                height:
-                    12,
+                height: 12,
               ),
-
               Text(
                 _error!,
-                textAlign:
-                    TextAlign.center,
+                textAlign: TextAlign.center,
               ),
-
               const SizedBox(
-                height:
-                    20,
+                height: 20,
               ),
-
               FilledButton.icon(
-                onPressed:
-                    () {
+                onPressed: () {
                   _loadGroups(
-                    forceRefresh:
-                        true,
+                    forceRefresh: true,
                   );
                 },
-                icon:
-                    const Icon(
+                icon: const Icon(
                   Icons.refresh,
                 ),
-                label:
-                    const Text(
+                label: const Text(
                   'Try Again',
                 ),
               ),
@@ -351,44 +259,33 @@ class _TelegramGroupsPageState
       children: [
         if (_isRefreshing)
           const LinearProgressIndicator(
-            minHeight:
-                2,
+            minHeight: 2,
           ),
 
         Padding(
-          padding:
-              const EdgeInsets.fromLTRB(
+          padding: const EdgeInsets.fromLTRB(
             24,
             20,
             24,
             12,
           ),
-          child:
-              TextField(
-            controller:
-                _searchController,
-            decoration:
-                InputDecoration(
-              hintText:
-                  'Search groups...',
-              prefixIcon:
-                  const Icon(
+          child: TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              hintText: 'Search groups...',
+              prefixIcon: const Icon(
                 Icons.search,
               ),
-              suffixIcon:
-                  _searchQuery.isNotEmpty
-                      ? IconButton(
-                          tooltip:
-                              'Clear Search',
-                          onPressed:
-                              _searchController
-                                  .clear,
-                          icon:
-                              const Icon(
-                            Icons.clear,
-                          ),
-                        )
-                      : null,
+              suffixIcon: _searchQuery.isNotEmpty
+                  ? IconButton(
+                      tooltip: 'Clear Search',
+                      onPressed:
+                          _searchController.clear,
+                      icon: const Icon(
+                        Icons.clear,
+                      ),
+                    )
+                  : null,
               border:
                   const OutlineInputBorder(),
             ),
@@ -398,113 +295,93 @@ class _TelegramGroupsPageState
         Padding(
           padding:
               const EdgeInsets.symmetric(
-            horizontal:
-                24,
+            horizontal: 24,
           ),
-          child:
-              Row(
+          child: Row(
             children: [
               Text(
                 '${filteredGroups.length} groups',
-                style:
-                    Theme.of(context)
-                        .textTheme
-                        .titleMedium,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium,
               ),
-
               const Spacer(),
-
               if (_isRefreshing)
                 Text(
                   'Updating...',
-                  style:
-                      Theme.of(context)
-                          .textTheme
-                          .bodySmall,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall,
                 ),
             ],
           ),
         ),
 
         const SizedBox(
-          height:
-              8,
+          height: 8,
         ),
 
         Expanded(
-          child:
-              filteredGroups.isEmpty
-                  ? const Center(
-                      child:
-                          Text(
-                        'No groups found.',
+          child: filteredGroups.isEmpty
+              ? const Center(
+                  child: Text(
+                    'No groups found.',
+                  ),
+                )
+              : ListView.separated(
+                  padding:
+                      const EdgeInsets.all(
+                    24,
+                  ),
+                  itemCount:
+                      filteredGroups.length,
+                  separatorBuilder:
+                      (
+                    context,
+                    index,
+                  ) =>
+                          const Divider(
+                    height: 1,
+                  ),
+                  itemBuilder:
+                      (
+                    context,
+                    index,
+                  ) {
+                    final group =
+                        filteredGroups[
+                            index];
+
+                    return ListTile(
+                      leading: CircleAvatar(
+                        child: Icon(
+                          group.isChannel
+                              ? Icons
+                                  .groups_2_outlined
+                              : Icons
+                                  .group_outlined,
+                        ),
                       ),
-                    )
-                  : ListView.separated(
-                      padding:
-                          const EdgeInsets.all(
-                        24,
+                      title: Text(
+                        group.title,
                       ),
-                      itemCount:
-                          filteredGroups.length,
-                      separatorBuilder:
-                          (
-                        context,
-                        index,
-                      ) =>
-                              const Divider(
-                        height:
-                            1,
+                      subtitle: Text(
+                        group.isChannel
+                            ? 'Supergroup'
+                            : 'Group',
                       ),
-                      itemBuilder:
-                          (
-                        context,
-                        index,
-                      ) {
-                        final group =
-                            filteredGroups[
-                                index];
-
-                        return ListTile(
-                          leading:
-                              CircleAvatar(
-                            child:
-                                Icon(
-                              group.isChannel
-                                  ? Icons
-                                      .groups_2_outlined
-                                  : Icons
-                                      .group_outlined,
-                            ),
-                          ),
-
-                          title:
-                              Text(
-                            group.title,
-                          ),
-
-                          subtitle:
-                              Text(
-                            group.isChannel
-                                ? 'Supergroup'
-                                : 'Group',
-                          ),
-
-                          trailing:
-                              const Icon(
-                            Icons
-                                .chevron_right,
-                          ),
-
-                          onTap:
-                              () {
-                            _openGroup(
-                              group,
-                            );
-                          },
+                      trailing:
+                          const Icon(
+                        Icons.chevron_right,
+                      ),
+                      onTap: () {
+                        _openGroup(
+                          group,
                         );
                       },
-                    ),
+                    );
+                  },
+                ),
         ),
       ],
     );
