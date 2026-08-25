@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:path/path.dart' as p;
 import 'package:t/t.dart' as t;
 import 'package:tg/tg.dart' as tg;
 
@@ -21,6 +22,9 @@ class TelegramClient {
   tg.Client? _client;
   TelegramSocket? _socket;
 
+  Future<tg.Client>? _connectFuture;
+  Future<void>? _disconnectFuture;
+
   t.DcOption _dc = const t.DcOption(
     ipv6: false,
     mediaOnly: false,
@@ -35,46 +39,17 @@ class TelegramClient {
 
   final List<t.DcOption> dcs = [];
 
-  /*
-   * Cliente base autorizado de cada DC.
-   */
   final Map<int, tg.Client> _dcClients = {};
-
-  final Map<int, TelegramSocket>
-      _dcSockets = {};
-
+  final Map<int, TelegramSocket> _dcSockets = {};
   final Map<int, Future<tg.Client>>
       _dcClientFutures = {};
 
-  /*
-   * Pool dedicado para downloads.
-   *
-   * Chave:
-   *
-   * dcId:slot
-   *
-   * Exemplo:
-   *
-   * 2:0
-   * 2:1
-   * 2:2
-   * 2:3
-   */
   final Map<String, tg.Client>
       _downloadClients = {};
-
   final Map<String, TelegramSocket>
       _downloadSockets = {};
-
   final Map<String, Future<tg.Client>>
       _downloadClientFutures = {};
-
-  final StreamController<Object>
-      _logsController =
-      StreamController<Object>.broadcast();
-
-  Stream<Object> get logs =>
-      _logsController.stream;
 
   tg.Client? get client =>
       _client;
@@ -82,29 +57,176 @@ class TelegramClient {
   int get currentDcId =>
       _dc.id;
 
-  bool get hasSavedSession =>
-      File(_sessionFileName).existsSync();
+  /*
+   * Mantido somente por compatibilidade.
+   *
+   * O aplicativo não possui mais consumidor
+   * dos antigos logs MTProto.
+   */
+  Stream<Object> get logs =>
+      const Stream<Object>.empty();
 
-  void _log(
-    Object value,
-  ) {
-    if (!_logsController.isClosed) {
-      _logsController.add(
-        value,
-      );
+  bool get hasSavedSession {
+    try {
+      return _resolveSessionFile(
+        migrateLegacy:
+            true,
+      ).existsSync();
+    } catch (_) {
+      return false;
     }
+  }
+
+  // ============================================================
+  // SESSION PATH
+  // ============================================================
+
+  String get sessionFilePath =>
+      _sessionFilePath();
+
+  String _sessionFilePath() {
+    final localAppData =
+        Platform.environment[
+            'LOCALAPPDATA'];
+
+    final basePath =
+        localAppData != null &&
+                localAppData.isNotEmpty
+            ? localAppData
+            : Directory.systemTemp.path;
+
+    return p.join(
+      basePath,
+      'Fabularium',
+      'Telegram',
+      _sessionFileName,
+    );
+  }
+
+  File _resolveSessionFile({
+    required bool migrateLegacy,
+  }) {
+    final target =
+        File(
+      _sessionFilePath(),
+    );
+
+    if (!migrateLegacy ||
+        target.existsSync()) {
+      return target;
+    }
+
+    /*
+     * Versões anteriores gravavam a sessão
+     * no current working directory.
+     *
+     * Fazemos a migração de forma idempotente,
+     * para funcionar mesmo com vários isolates.
+     */
+    final legacy =
+        File(
+      p.join(
+        Directory.current.path,
+        _sessionFileName,
+      ),
+    );
+
+    if (!legacy.existsSync()) {
+      return target;
+    }
+
+    try {
+      target.parent.createSync(
+        recursive:
+            true,
+      );
+
+      if (!target.existsSync()) {
+        legacy.copySync(
+          target.path,
+        );
+      }
+
+      /*
+       * Só removemos o arquivo antigo depois
+       * de confirmar que o novo realmente existe.
+       */
+      if (target.existsSync() &&
+          legacy.existsSync()) {
+        try {
+          legacy.deleteSync();
+        } catch (_) {}
+      }
+    } catch (_) {
+      /*
+       * Se houver uma corrida entre isolates,
+       * outro isolate pode já ter concluído
+       * a migração. Nesse caso basta usar o
+       * arquivo novo se ele existir.
+       */
+    }
+
+    return target.existsSync()
+        ? target
+        : legacy;
   }
 
   // ============================================================
   // MAIN CONNECTION
   // ============================================================
 
-  Future<tg.Client> connect() async {
+  Future<tg.Client> connect() {
     final existingClient =
         _client;
 
     if (existingClient != null) {
-      return existingClient;
+      return Future<tg.Client>.value(
+        existingClient,
+      );
+    }
+
+    final existingFuture =
+        _connectFuture;
+
+    if (existingFuture != null) {
+      return existingFuture;
+    }
+
+    late final Future<tg.Client>
+        future;
+
+    future =
+        _connectInternal()
+            .whenComplete(
+      () {
+        if (identical(
+          _connectFuture,
+          future,
+        )) {
+          _connectFuture =
+              null;
+        }
+      },
+    );
+
+    _connectFuture =
+        future;
+
+    return future;
+  }
+
+  Future<tg.Client>
+      _connectInternal() async {
+    /*
+     * Se um disconnect anterior ainda está
+     * terminando, esperamos antes de abrir
+     * outro socket.
+     */
+    final disconnectFuture =
+        _disconnectFuture;
+
+    if (disconnectFuture != null) {
+      await disconnectFuture;
     }
 
     final session =
@@ -116,17 +238,7 @@ class TelegramClient {
     if (session != null) {
       _dc =
           session.dc;
-
-      _log(
-        'Sessão encontrada no DC ${_dc.id}.',
-      );
     }
-
-    _log(
-      'Conectando ao Telegram '
-      'DC ${_dc.id} - '
-      '${_dc.ipAddress}:${_dc.port}',
-    );
 
     final rawSocket =
         await Socket.connect(
@@ -134,7 +246,8 @@ class TelegramClient {
       _dc.port,
       timeout:
           const Duration(
-        seconds: 15,
+        seconds:
+            15,
       ),
     );
 
@@ -163,27 +276,16 @@ class TelegramClient {
       late final tg.AuthorizationKey
           authorizationKey;
 
-      if (savedAuthorizationKey != null) {
+      if (savedAuthorizationKey !=
+          null) {
         authorizationKey =
             savedAuthorizationKey;
-
-        _log(
-          'AuthorizationKey principal restaurada.',
-        );
       } else {
-        _log(
-          'Criando AuthorizationKey principal...',
-        );
-
         authorizationKey =
             await tg.Client.authorize(
           telegramSocket,
           obfuscation,
           idGenerator,
-        );
-
-        _log(
-          'AuthorizationKey principal criada.',
         );
       }
 
@@ -199,17 +301,19 @@ class TelegramClient {
             idGenerator,
       );
 
-      final mainDcId =
-          _dc.id;
-
-      _listenClient(
+      /*
+       * Mantemos o stream drenado, mas sem
+       * converter cada update/evento para
+       * String e sem enviar para StreamController.
+       */
+      _drainClientStream(
         client,
-        'MAIN DC $mainDcId',
       );
 
       final configResponse =
           await client
-              .initConnection<t.Config>(
+              .initConnection<
+                  t.Config>(
         apiId:
             TelegramConfig.apiId,
         deviceModel:
@@ -228,7 +332,8 @@ class TelegramClient {
             const t.HelpGetConfig(),
       );
 
-      if (configResponse.error != null) {
+      if (configResponse.error !=
+          null) {
         throw Exception(
           configResponse
               .error!
@@ -240,33 +345,17 @@ class TelegramClient {
           configResponse.result;
 
       if (config != null) {
-        dcs.clear();
-
-        dcs.addAll(
-          config.dcOptions
-              .whereType<t.DcOption>(),
-        );
-
-        _log(
-          '${dcs.length} endpoints Telegram encontrados.',
-        );
-
-        for (final dc in dcs) {
-          _log(
-            'DC ${dc.id} '
-            '${dc.ipAddress}:${dc.port} '
-            'mediaOnly=${dc.mediaOnly} '
-            'cdn=${dc.cdn}',
+        dcs
+          ..clear()
+          ..addAll(
+            config.dcOptions
+                .whereType<
+                    t.DcOption>(),
           );
-        }
       }
 
       _client =
           client;
-
-      _log(
-        'Telegram conectado no DC $mainDcId.',
-      );
 
       return client;
     } catch (_) {
@@ -274,8 +363,13 @@ class TelegramClient {
         await telegramSocket.close();
       } catch (_) {}
 
-      _socket =
-          null;
+      if (identical(
+        _socket,
+        telegramSocket,
+      )) {
+        _socket =
+            null;
+      }
 
       rethrow;
     }
@@ -298,17 +392,10 @@ class TelegramClient {
       );
     }
 
-    /*
-     * O arquivo está no mesmo DC
-     * da sessão principal.
-     */
     if (dcId == _dc.id) {
       return mainClient;
     }
 
-    /*
-     * DC já autorizado.
-     */
     final cached =
         _dcClients[dcId];
 
@@ -316,13 +403,6 @@ class TelegramClient {
       return cached;
     }
 
-    /*
-     * Outra chamada já está realizando
-     * a autorização deste DC.
-     *
-     * Isso é muito importante quando
-     * vários previews aparecem ao mesmo tempo.
-     */
     final pending =
         _dcClientFutures[dcId];
 
@@ -341,6 +421,27 @@ class TelegramClient {
     try {
       final result =
           await future;
+
+      /*
+       * Se a conexão principal foi encerrada
+       * enquanto o DC estava sendo criado,
+       * não deixamos o cliente auxiliar
+       * sobreviver escondido.
+       */
+      if (_client == null) {
+        final socket =
+            _dcSockets.remove(
+          dcId,
+        );
+
+        try {
+          await socket?.close();
+        } catch (_) {}
+
+        throw StateError(
+          'Cliente Telegram foi desconectado durante a autorização do DC $dcId.',
+        );
+      }
 
       _dcClients[dcId] =
           result;
@@ -377,11 +478,6 @@ class TelegramClient {
       );
     }
 
-    /*
-     * Se algum authorization exportado tiver
-     * expirado ou sido invalidado, tentamos
-     * novamente uma vez com novos bytes.
-     */
     const maxAttempts =
         2;
 
@@ -390,15 +486,6 @@ class TelegramClient {
     for (int attempt = 1;
         attempt <= maxAttempts;
         attempt++) {
-      _log(
-        'Autorizando DC $dcId '
-        '(tentativa $attempt/$maxAttempts)...',
-      );
-
-      /*
-       * O EXPORT sempre acontece no DC
-       * principal já autenticado.
-       */
       final exportResponse =
           await mainClient.auth
               .exportAuthorization(
@@ -406,7 +493,8 @@ class TelegramClient {
             dcId,
       );
 
-      if (exportResponse.error != null) {
+      if (exportResponse.error !=
+          null) {
         throw Exception(
           'Falha exportando autorização '
           'para DC $dcId: '
@@ -426,7 +514,8 @@ class TelegramClient {
       }
 
       late final int exportedId;
-      late final Uint8List exportedBytes;
+      late final Uint8List
+          exportedBytes;
 
       try {
         exportedId =
@@ -435,7 +524,8 @@ class TelegramClient {
         final dynamic rawBytes =
             exported.bytes;
 
-        if (rawBytes is Uint8List) {
+        if (rawBytes
+            is Uint8List) {
           exportedBytes =
               Uint8List.fromList(
             rawBytes,
@@ -456,26 +546,6 @@ class TelegramClient {
       }
 
       try {
-        /*
-         * CORREÇÃO IMPORTANTE
-         * ======================================================
-         *
-         * Antes fazíamos:
-         *
-         * 1. cria auth_key
-         * 2. initConnection(HelpGetConfig)
-         * 3. auth.importAuthorization
-         *
-         * Agora fazemos:
-         *
-         * 1. cria auth_key
-         * 2. initConnection(
-         *      AuthImportAuthorization
-         *    )
-         *
-         * A importação passa a ser a primeira
-         * chamada API desta nova sessão.
-         */
         final connection =
             await _openImportedAuthorizationConnection(
           dc:
@@ -484,16 +554,10 @@ class TelegramClient {
               exportedId,
           exportedBytes:
               exportedBytes,
-          label:
-              'AUTH DC $dcId',
         );
 
         _dcSockets[dcId] =
             connection.socket;
-
-        _log(
-          'DC $dcId autorizado com sucesso.',
-        );
 
         return connection.client;
       } catch (e) {
@@ -503,21 +567,11 @@ class TelegramClient {
         final message =
             e.toString();
 
-        /*
-         * AUTH_BYTES_INVALID:
-         *
-         * descartamos esse export e
-         * solicitamos novos bytes.
-         */
         if (message.contains(
               'AUTH_BYTES_INVALID',
             ) &&
-            attempt < maxAttempts) {
-          _log(
-            'AUTH_BYTES_INVALID no DC $dcId. '
-            'Exportando nova autorização...',
-          );
-
+            attempt <
+                maxAttempts) {
           continue;
         }
 
@@ -539,18 +593,10 @@ class TelegramClient {
     int dcId, {
     int size = 4,
   }) async {
-    /*
-     * Primeiro cria UMA autorização
-     * válida naquele DC.
-     */
     await getClientForDataCenter(
       dcId,
     );
 
-    /*
-     * Depois as sessões paralelas
-     * reutilizam aquela mesma auth_key.
-     */
     await Future.wait(
       List.generate(
         size,
@@ -600,6 +646,21 @@ class TelegramClient {
       final result =
           await future;
 
+      if (_client == null) {
+        final socket =
+            _downloadSockets.remove(
+          key,
+        );
+
+        try {
+          await socket?.close();
+        } catch (_) {}
+
+        throw StateError(
+          'Cliente Telegram foi desconectado durante a criação da sessão de download.',
+        );
+      }
+
       _downloadClients[key] =
           result;
 
@@ -616,21 +677,11 @@ class TelegramClient {
     required int dcId,
     required int slot,
   }) async {
-    /*
-     * Esse cliente já possui autorização
-     * de usuário no DC correto.
-     */
     final authorizedClient =
         await getClientForDataCenter(
       dcId,
     );
 
-    /*
-     * Cria outra sessão MTProto usando
-     * a mesma AuthorizationKey.
-     *
-     * tg.Client criará outro session_id.
-     */
     final clonedAuthorizationKey =
         tg.AuthorizationKey.fromJson(
       authorizedClient
@@ -638,10 +689,6 @@ class TelegramClient {
           .toJson(),
     );
 
-    /*
-     * Para upload.getFile preferimos
-     * endpoint mediaOnly.
-     */
     final dc =
         findMediaDataCenter(
               dcId,
@@ -659,23 +706,12 @@ class TelegramClient {
       );
     }
 
-    final label =
-        'DOWNLOAD DC $dcId SLOT $slot';
-
-    _log(
-      '$label usando '
-      '${dc.mediaOnly ? 'media DC' : 'normal DC'} '
-      '${dc.ipAddress}:${dc.port}',
-    );
-
     final connection =
         await _openConnectionWithAuthorizationKey(
       dc:
           dc,
       authorizationKey:
           clonedAuthorizationKey,
-      label:
-          label,
     );
 
     final key =
@@ -696,7 +732,6 @@ class TelegramClient {
     required t.DcOption dc,
     required int exportedId,
     required Uint8List exportedBytes,
-    required String label,
   }) async {
     final rawSocket =
         await Socket.connect(
@@ -704,7 +739,8 @@ class TelegramClient {
       dc.port,
       timeout:
           const Duration(
-        seconds: 15,
+        seconds:
+            15,
       ),
     );
 
@@ -727,14 +763,6 @@ class TelegramClient {
         obfuscation.preamble,
       );
 
-      _log(
-        '$label criando auth_key...',
-      );
-
-      /*
-       * Cria uma auth_key MTProto
-       * específica para esse DC.
-       */
       final authorizationKey =
           await tg.Client.authorize(
         telegramSocket,
@@ -754,20 +782,16 @@ class TelegramClient {
             idGenerator,
       );
 
-      _listenClient(
+      _drainClientStream(
         client,
-        label,
       );
 
       /*
-       * ========================================================
-       * CORREÇÃO DO AUTH_BYTES_INVALID
-       * ========================================================
+       * ImportAuthorization permanece como
+       * a PRIMEIRA chamada API dessa sessão.
        *
-       * ImportAuthorization é enviado DENTRO
-       * do initConnection.
-       *
-       * Não fazemos HelpGetConfig primeiro.
+       * Essa ordem é necessária para evitar
+       * AUTH_BYTES_INVALID em alguns DCs.
        */
       final importResponse =
           await client
@@ -796,7 +820,8 @@ class TelegramClient {
         ),
       );
 
-      if (importResponse.error != null) {
+      if (importResponse.error !=
+          null) {
         throw Exception(
           'Falha importando autorização '
           'no DC ${dc.id}: '
@@ -804,16 +829,13 @@ class TelegramClient {
         );
       }
 
-      if (importResponse.result == null) {
+      if (importResponse.result ==
+          null) {
         throw Exception(
           'Telegram não confirmou '
           'a autorização do DC ${dc.id}.',
         );
       }
-
-      _log(
-        '$label inicializado e autorizado.',
-      );
 
       return _TelegramConnection(
         client:
@@ -839,7 +861,6 @@ class TelegramClient {
     required t.DcOption dc,
     required tg.AuthorizationKey
         authorizationKey,
-    required String label,
   }) async {
     final rawSocket =
         await Socket.connect(
@@ -847,7 +868,8 @@ class TelegramClient {
       dc.port,
       timeout:
           const Duration(
-        seconds: 15,
+        seconds:
+            15,
       ),
     );
 
@@ -882,14 +904,12 @@ class TelegramClient {
             idGenerator,
       );
 
-      _listenClient(
+      _drainClientStream(
         client,
-        label,
       );
 
       await _initializeClient(
         client,
-        label,
       );
 
       return _TelegramConnection(
@@ -907,32 +927,36 @@ class TelegramClient {
     }
   }
 
-  void _listenClient(
+  void _drainClientStream(
     tg.Client client,
-    String label,
   ) {
+    /*
+     * Antes cada evento fazia:
+     *
+     * event.toString()
+     * + interpolação
+     * + StreamController.add()
+     *
+     * para um stream que não possuía
+     * consumidores no aplicativo.
+     *
+     * Mantemos somente um listener vazio
+     * para drenar updates/erros do tg.Client.
+     */
     client.stream.listen(
-      (event) {
-        _log(
-          '[$label] $event',
-        );
-      },
+      (_) {},
       onError:
-          (error) {
-        _log(
-          '[$label] Erro: $error',
-        );
-      },
+          (_) {},
     );
   }
 
   Future<void> _initializeClient(
     tg.Client client,
-    String label,
   ) async {
     final response =
         await client
-            .initConnection<t.Config>(
+            .initConnection<
+                t.Config>(
       apiId:
           TelegramConfig.apiId,
       deviceModel:
@@ -951,10 +975,12 @@ class TelegramClient {
           const t.HelpGetConfig(),
     );
 
-    if (response.error != null) {
+    if (response.error !=
+        null) {
       throw Exception(
-        '$label: '
-        '${response.error!.errorMessage}',
+        response
+            .error!
+            .errorMessage,
       );
     }
   }
@@ -973,10 +999,6 @@ class TelegramClient {
         continue;
       }
 
-      /*
-       * Para autorização usamos
-       * endpoint normal.
-       */
       if (dc.ipv6 ||
           dc.cdn ||
           dc.mediaOnly) {
@@ -1052,10 +1074,28 @@ class TelegramClient {
 
     final file =
         File(
-      _sessionFileName,
+      _sessionFilePath(),
     );
 
-    await file.writeAsString(
+    await file.parent.create(
+      recursive:
+          true,
+    );
+
+    /*
+     * Grava primeiro em arquivo temporário
+     * e depois renomeia.
+     *
+     * Evita deixar telegram_auth.json
+     * parcialmente escrito se o processo
+     * for encerrado no meio da gravação.
+     */
+    final temp =
+        File(
+      '${file.path}.tmp',
+    );
+
+    await temp.writeAsString(
       jsonEncode(
         data,
       ),
@@ -1063,17 +1103,42 @@ class TelegramClient {
           true,
     );
 
-    _log(
-      'Sessão principal salva.',
+    if (await file.exists()) {
+      await file.delete();
+    }
+
+    await temp.rename(
+      file.path,
     );
+
+    /*
+     * Se ainda existir uma sessão legada,
+     * removemos depois que a nova foi salva.
+     */
+    final legacy =
+        File(
+      p.join(
+        Directory.current.path,
+        _sessionFileName,
+      ),
+    );
+
+    if (legacy.path !=
+            file.path &&
+        await legacy.exists()) {
+      try {
+        await legacy.delete();
+      } catch (_) {}
+    }
   }
 
   _TelegramSession?
       _loadSession() {
     try {
       final file =
-          File(
-        _sessionFileName,
+          _resolveSessionFile(
+        migrateLegacy:
+            true,
       );
 
       if (!file.existsSync()) {
@@ -1087,12 +1152,6 @@ class TelegramClient {
 
       if (decoded
           is! Map<String, dynamic>) {
-        return null;
-      }
-
-      if (!decoded.containsKey(
-        'authorizationKey',
-      )) {
         return null;
       }
 
@@ -1147,28 +1206,41 @@ class TelegramClient {
         dc:
             dc,
       );
-    } catch (e) {
-      _log(
-        'Erro carregando sessão: $e',
-      );
-
+    } catch (_) {
       return null;
     }
   }
 
   Future<void> deleteSession() async {
-    final file =
+    final primary =
         File(
-      _sessionFileName,
+      _sessionFilePath(),
     );
 
-    if (await file.exists()) {
-      await file.delete();
+    final legacy =
+        File(
+      p.join(
+        Directory.current.path,
+        _sessionFileName,
+      ),
+    );
+
+    final temp =
+        File(
+      '${primary.path}.tmp',
+    );
+
+    for (final file in <File>[
+      primary,
+      legacy,
+      temp,
+    ]) {
+      try {
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (_) {}
     }
-
-    _log(
-      'Sessão removida.',
-    );
   }
 
   // ============================================================
@@ -1178,24 +1250,10 @@ class TelegramClient {
   Future<void> changeDataCenter(
     t.DcOption dc,
   ) async {
-    _log(
-      'Alterando DC principal '
-      '${_dc.id} -> ${dc.id}.',
+    await _disconnectInternal(
+      closeMain:
+          true,
     );
-
-    await _disconnectAuxiliaryClients();
-
-    await _disconnectDownloadClients();
-
-    try {
-      await _socket?.close();
-    } catch (_) {}
-
-    _socket =
-        null;
-
-    _client =
-        null;
 
     _dc =
         dc;
@@ -1207,6 +1265,29 @@ class TelegramClient {
 
   Future<void>
       _disconnectAuxiliaryClients() async {
+    /*
+     * Esperamos autorizações que já estavam
+     * em andamento antes de fechar os sockets.
+     *
+     * Isso evita um Future concluir depois do
+     * disconnect e registrar um socket órfão.
+     */
+    final pending =
+        _dcClientFutures.values
+            .toList();
+
+    if (pending.isNotEmpty) {
+      await Future.wait(
+        pending.map(
+          (future) async {
+            try {
+              await future;
+            } catch (_) {}
+          },
+        ),
+      );
+    }
+
     final sockets =
         _dcSockets.values.toList();
 
@@ -1214,49 +1295,116 @@ class TelegramClient {
     _dcSockets.clear();
     _dcClientFutures.clear();
 
-    for (final socket in sockets) {
-      try {
-        await socket.close();
-      } catch (_) {}
-    }
+    await Future.wait(
+      sockets.map(
+        (socket) async {
+          try {
+            await socket.close();
+          } catch (_) {}
+        },
+      ),
+    );
   }
 
   Future<void>
       _disconnectDownloadClients() async {
+    final pending =
+        _downloadClientFutures.values
+            .toList();
+
+    if (pending.isNotEmpty) {
+      await Future.wait(
+        pending.map(
+          (future) async {
+            try {
+              await future;
+            } catch (_) {}
+          },
+        ),
+      );
+    }
+
     final sockets =
-        _downloadSockets.values.toList();
+        _downloadSockets.values
+            .toList();
 
     _downloadClients.clear();
     _downloadSockets.clear();
     _downloadClientFutures.clear();
 
-    for (final socket in sockets) {
+    await Future.wait(
+      sockets.map(
+        (socket) async {
+          try {
+            await socket.close();
+          } catch (_) {}
+        },
+      ),
+    );
+  }
+
+  Future<void> _disconnectInternal({
+    required bool closeMain,
+  }) async {
+    /*
+     * Download clients podem depender de
+     * um cliente auxiliar, então fechamos
+     * o pool antes dos DCs auxiliares.
+     */
+    await _disconnectDownloadClients();
+    await _disconnectAuxiliaryClients();
+
+    if (closeMain) {
+      final socket =
+          _socket;
+
+      _socket =
+          null;
+
+      _client =
+          null;
+
       try {
-        await socket.close();
+        await socket?.close();
       } catch (_) {}
     }
   }
 
-  Future<void> disconnect() async {
-    await _disconnectDownloadClients();
+  Future<void> disconnect() {
+    final existing =
+        _disconnectFuture;
 
-    await _disconnectAuxiliaryClients();
+    if (existing != null) {
+      return existing;
+    }
 
-    try {
-      await _socket?.close();
-    } catch (_) {}
+    late final Future<void>
+        future;
 
-    _socket =
-        null;
+    future =
+        _disconnectInternal(
+      closeMain:
+          true,
+    ).whenComplete(
+      () {
+        if (identical(
+          _disconnectFuture,
+          future,
+        )) {
+          _disconnectFuture =
+              null;
+        }
+      },
+    );
 
-    _client =
-        null;
+    _disconnectFuture =
+        future;
+
+    return future;
   }
 
   Future<void> dispose() async {
     await disconnect();
-
-    await _logsController.close();
   }
 }
 
