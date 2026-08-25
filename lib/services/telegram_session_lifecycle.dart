@@ -9,19 +9,8 @@ import 'telegram_service.dart';
 class TelegramSessionLifecycle {
   TelegramSessionLifecycle._() {
     /*
-     * Todos os workers reportam uma sessão
-     * inválida para o MAIN ISOLATE.
-     *
-     * Independentemente de o erro aparecer
-     * durante:
-     *
-     * - grupos;
-     * - mensagens;
-     * - download;
-     * - preview.
-     *
-     * todos convergem para o mesmo fluxo
-     * de encerramento da sessão.
+     * Todos os workers convergem para o mesmo
+     * fluxo de invalidação no MAIN ISOLATE.
      */
     _browseWorker.setSessionInvalidHandler(
       _handleSessionInvalid,
@@ -38,6 +27,14 @@ class TelegramSessionLifecycle {
   final TelegramBrowseWorker _browseWorker =
       TelegramBrowseWorker.instance;
 
+  /*
+   * Ainda mantemos a referência porque este
+   * lifecycle registra o callback de sessão
+   * inválida do Download/Preview Worker.
+   *
+   * O reset operacional dele agora pertence
+   * ao DownloadQueueService.
+   */
   final TelegramDownloadWorker _downloadWorker =
       TelegramDownloadWorker.instance;
 
@@ -70,11 +67,10 @@ class TelegramSessionLifecycle {
     String errorMessage,
   ) {
     /*
-     * Browse, Download e Preview podem
-     * perceber a mesma invalidação quase
-     * simultaneamente.
+     * Browse, Download e Preview podem perceber
+     * a mesma invalidação simultaneamente.
      *
-     * Este Future funciona como dedupe global.
+     * Este Future faz o dedupe global.
      */
     final existing =
         _invalidSessionFuture;
@@ -83,10 +79,10 @@ class TelegramSessionLifecycle {
       return existing;
     }
 
-    late final Future<void>
-        future;
+    late final Future<void> future;
 
-    future = _performInvalidSession(
+    future =
+        _performInvalidSession(
       errorMessage,
     ).whenComplete(
       () {
@@ -110,24 +106,16 @@ class TelegramSessionLifecycle {
     String errorMessage,
   ) async {
     /*
-     * Primeiro atualizamos a sessão do
-     * MAIN ISOLATE.
-     *
-     * TelegramService muda para disconnected
-     * e notifica automaticamente qualquer
-     * tela ouvindo stateStream.
-     *
-     * logout() aqui somente encerra nossa
-     * sessão local. Não executa auth.logOut
-     * remoto.
+     * Atualiza primeiro o estado do
+     * TelegramService no MAIN ISOLATE.
      */
     try {
       await _telegram.logout();
     } catch (_) {
       /*
-       * Mesmo se houver problema apagando
-       * a sessão local, os workers ainda
-       * precisam ser encerrados.
+       * Os workers ainda precisam ser
+       * encerrados mesmo se a limpeza
+       * da sessão local falhar.
        */
     }
 
@@ -154,10 +142,10 @@ class TelegramSessionLifecycle {
       return existing;
     }
 
-    late final Future<void>
-        future;
+    late final Future<void> future;
 
-    future = _performReset(
+    future =
+        _performReset(
       reason:
           reason,
     ).whenComplete(
@@ -182,25 +170,21 @@ class TelegramSessionLifecycle {
     required Object reason,
   }) async {
     /*
-     * Invalida imediatamente previews da tela
+     * Cancela previews pertencentes à sessão
      * atual e limpa somente o cache em memória.
      *
-     * Arquivos físicos e downloads já concluídos
-     * permanecem no disco.
+     * O cache físico permanece intacto e continua
+     * sendo administrado pelo limite de tamanho/
+     * idade do TelegramFileService.
      */
     _previewManager.cancelPending();
 
     _previewManager.clearMemoryCache();
 
     /*
-     * Remove tarefas que ainda não estão
-     * efetivamente executando.
-     *
-     * Isso impede o queue processor de iniciar
-     * outro arquivo enquanto encerramos a sessão.
+     * Browse é responsabilidade direta
+     * do lifecycle.
      */
-    _removeNonRunningDownloadTasks();
-
     try {
       await _browseWorker.reset(
         reason:
@@ -214,50 +198,21 @@ class TelegramSessionLifecycle {
        */
     }
 
+    /*
+     * A fila agora controla integralmente:
+     *
+     * - tarefas queued;
+     * - tarefa downloading;
+     * - reset do Download/Preview Worker;
+     * - limpeza das tarefas da sessão anterior.
+     */
     try {
-      await _downloadWorker.resetSession();
+      await _downloadQueue
+          .resetForSessionEnd();
     } catch (_) {
       /*
        * best effort
        */
-    }
-
-    /*
-     * O Future do download que estava executando
-     * recebe erro quando o worker é resetado.
-     *
-     * Cedemos dois ciclos para
-     * DownloadQueueService atualizar o estado
-     * da tarefa antes da limpeza final.
-     */
-    await Future<void>.delayed(
-      Duration.zero,
-    );
-
-    await Future<void>.delayed(
-      Duration.zero,
-    );
-
-    _removeNonRunningDownloadTasks();
-  }
-
-  // ============================================================
-  // DOWNLOAD QUEUE
-  // ============================================================
-
-  void _removeNonRunningDownloadTasks() {
-    final tasks =
-        _downloadQueue.tasks.toList();
-
-    for (final task
-        in tasks) {
-      if (task.isDownloading) {
-        continue;
-      }
-
-      _downloadQueue.remove(
-        task,
-      );
     }
   }
 }

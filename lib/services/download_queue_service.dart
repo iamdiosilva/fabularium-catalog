@@ -17,39 +17,38 @@ class DownloadQueueService
   final TelegramFileService _files =
       TelegramFileService.instance;
 
-  final TelegramDownloadWorker
-      _downloadWorker =
+  final TelegramDownloadWorker _downloadWorker =
       TelegramDownloadWorker.instance;
 
   final List<DownloadTask> _tasks =
       [];
 
-  final Map<String, DownloadTask>
-      _tasksById =
+  final Map<String, DownloadTask> _tasksById =
       {};
 
   final Map<String, ValueNotifier<int>>
       _taskRevisions =
       {};
 
-  final ValueNotifier<int>
-      _progressRevision =
+  final ValueNotifier<int> _progressRevision =
       ValueNotifier<int>(
     0,
   );
 
-  ValueListenable<int>
-      get progressListenable =>
-          _progressRevision;
+  ValueListenable<int> get progressListenable =>
+      _progressRevision;
 
   bool _processing =
       false;
 
-  static const Duration
-      _uiUpdateInterval =
+  bool _sessionResetting =
+      false;
+
+  Future<void>? _sessionResetFuture;
+
+  static const Duration _uiUpdateInterval =
       Duration(
-    milliseconds:
-        150,
+    milliseconds: 150,
   );
 
   Timer? _progressUiTimer;
@@ -59,9 +58,12 @@ class DownloadQueueService
     0,
   );
 
-  final Set<String>
-      _pendingTaskNotifications =
+  final Set<String> _pendingTaskNotifications =
       {};
+
+  // ============================================================
+  // GETTERS
+  // ============================================================
 
   List<DownloadTask> get tasks =>
       List.unmodifiable(
@@ -94,8 +96,7 @@ class DownloadQueueService
           .toList();
 
   DownloadTask? get currentTask {
-    for (final task
-        in _tasks) {
+    for (final task in _tasks) {
       if (task.isDownloading) {
         return task;
       }
@@ -108,8 +109,7 @@ class DownloadQueueService
     int result =
         0;
 
-    for (final task
-        in _tasks) {
+    for (final task in _tasks) {
       if (task.isQueued ||
           task.isDownloading) {
         result++;
@@ -123,8 +123,7 @@ class DownloadQueueService
     int result =
         0;
 
-    for (final task
-        in _tasks) {
+    for (final task in _tasks) {
       if (task.isQueued) {
         result++;
       }
@@ -137,8 +136,7 @@ class DownloadQueueService
     int result =
         0;
 
-    for (final task
-        in _tasks) {
+    for (final task in _tasks) {
       if (task.isCompleted) {
         result++;
       }
@@ -151,8 +149,7 @@ class DownloadQueueService
     int result =
         0;
 
-    for (final task
-        in _tasks) {
+    for (final task in _tasks) {
       if (task.isFailed) {
         result++;
       }
@@ -165,8 +162,11 @@ class DownloadQueueService
       _tasks.isNotEmpty;
 
   bool get hasActiveDownloads =>
-      activeCount >
-      0;
+      activeCount > 0;
+
+  // ============================================================
+  // IDS / LOOKUP
+  // ============================================================
 
   String buildTaskId(
     TelegramMedia media,
@@ -188,8 +188,7 @@ class DownloadQueueService
     )];
   }
 
-  ValueListenable<int>
-      listenableForMedia(
+  ValueListenable<int> listenableForMedia(
     TelegramMedia media,
     String groupTitle,
   ) {
@@ -202,12 +201,15 @@ class DownloadQueueService
     return _taskRevisions
         .putIfAbsent(
       id,
-      () =>
-          ValueNotifier<int>(
+      () => ValueNotifier<int>(
         0,
       ),
     );
   }
+
+  // ============================================================
+  // ENQUEUE
+  // ============================================================
 
   DownloadTask enqueue({
     required TelegramMedia media,
@@ -220,11 +222,11 @@ class DownloadQueueService
     );
 
     final existing =
-        _tasksById[
-            id];
+        _tasksById[id];
 
     if (existing != null) {
-      if (existing.isFailed) {
+      if (existing.isFailed &&
+          !_sessionResetting) {
         retry(
           existing,
         );
@@ -234,8 +236,7 @@ class DownloadQueueService
     }
 
     final downloadedPath =
-        _files
-            .getDownloadedMediaPath(
+        _files.getDownloadedMediaPath(
       media,
       groupTitle:
           groupTitle,
@@ -253,10 +254,8 @@ class DownloadQueueService
           DateTime.now(),
       status:
           downloadedPath != null
-              ? DownloadTaskStatus
-                  .completed
-              : DownloadTaskStatus
-                  .queued,
+              ? DownloadTaskStatus.completed
+              : DownloadTaskStatus.queued,
       receivedBytes:
           downloadedPath != null
               ? media.size
@@ -272,25 +271,30 @@ class DownloadQueueService
       task,
     );
 
-    _tasksById[
-            id] =
+    _tasksById[id] =
         task;
 
     _notifyImmediately(
       task,
     );
 
-    if (task.isQueued) {
+    if (task.isQueued &&
+        !_sessionResetting) {
       _startProcessing();
     }
 
     return task;
   }
 
+  // ============================================================
+  // RETRY
+  // ============================================================
+
   void retry(
     DownloadTask task,
   ) {
-    if (task.isDownloading) {
+    if (task.isDownloading ||
+        _sessionResetting) {
       return;
     }
 
@@ -328,6 +332,10 @@ class DownloadQueueService
     _startProcessing();
   }
 
+  // ============================================================
+  // REMOVE
+  // ============================================================
+
   void remove(
     DownloadTask task,
   ) {
@@ -362,8 +370,7 @@ class DownloadQueueService
           task.isCompleted,
     );
 
-    for (final task
-        in removed) {
+    for (final task in removed) {
       _tasksById.remove(
         task.id,
       );
@@ -390,8 +397,7 @@ class DownloadQueueService
           task.isFinished,
     );
 
-    for (final task
-        in removed) {
+    for (final task in removed) {
       _tasksById.remove(
         task.id,
       );
@@ -404,6 +410,143 @@ class DownloadQueueService
     _notifyStructure();
   }
 
+  // ============================================================
+  // SESSION RESET
+  // ============================================================
+
+  Future<void> resetForSessionEnd() {
+    final existing =
+        _sessionResetFuture;
+
+    if (existing != null) {
+      return existing;
+    }
+
+    late final Future<void> future;
+
+    future =
+        _performSessionReset()
+            .whenComplete(
+      () {
+        if (identical(
+          _sessionResetFuture,
+          future,
+        )) {
+          _sessionResetFuture =
+              null;
+        }
+      },
+    );
+
+    _sessionResetFuture =
+        future;
+
+    return future;
+  }
+
+  Future<void> _performSessionReset() async {
+    /*
+     * Bloqueia novos retries e impede o loop
+     * da fila de começar outro download.
+     */
+    _sessionResetting =
+        true;
+
+    try {
+      /*
+       * Tudo que ainda não está efetivamente
+       * executando pode sair imediatamente.
+       */
+      _removeNonRunningTasks();
+
+      /*
+       * O DownloadQueueService é o proprietário
+       * do fluxo de execução de downloads.
+       *
+       * Por isso ele também é o local correto
+       * para encerrar o worker associado à fila.
+       */
+      try {
+        await _downloadWorker.resetSession();
+      } catch (_) {
+        /*
+         * best effort
+         */
+      }
+
+      /*
+       * O download ativo recebe erro após o reset
+       * do isolate. Cedemos dois ciclos para
+       * _executeTask() registrar o estado failed.
+       */
+      await Future<void>.delayed(
+        Duration.zero,
+      );
+
+      await Future<void>.delayed(
+        Duration.zero,
+      );
+
+      /*
+       * Agora o download que estava ativo já não
+       * deve mais estar em downloading e também
+       * pode ser retirado.
+       */
+      _removeNonRunningTasks();
+
+      _progressUiTimer?.cancel();
+
+      _progressUiTimer =
+          null;
+
+      _pendingTaskNotifications.clear();
+
+      _notifyStructure();
+    } finally {
+      _sessionResetting =
+          false;
+    }
+  }
+
+  void _removeNonRunningTasks() {
+    final removed =
+        _tasks
+            .where(
+              (task) =>
+                  !task.isDownloading,
+            )
+            .toList();
+
+    if (removed.isEmpty) {
+      return;
+    }
+
+    _tasks.removeWhere(
+      (task) =>
+          !task.isDownloading,
+    );
+
+    for (final task in removed) {
+      _tasksById.remove(
+        task.id,
+      );
+
+      _pendingTaskNotifications.remove(
+        task.id,
+      );
+
+      _touchTask(
+        task.id,
+      );
+    }
+
+    _notifyStructure();
+  }
+
+  // ============================================================
+  // SHOW IN FOLDER
+  // ============================================================
+
   Future<void> showInFolder(
     DownloadTask task,
   ) async {
@@ -414,22 +557,29 @@ class DownloadQueueService
       return;
     }
 
-    await _files
-        .showFileInExplorer(
+    await _files.showFileInExplorer(
       path,
     );
   }
 
+  // ============================================================
+  // PROCESSING
+  // ============================================================
+
   void _startProcessing() {
-    if (_processing) {
+    if (_processing ||
+        _sessionResetting) {
       return;
     }
 
-    _processQueue();
+    unawaited(
+      _processQueue(),
+    );
   }
 
   Future<void> _processQueue() async {
-    if (_processing) {
+    if (_processing ||
+        _sessionResetting) {
       return;
     }
 
@@ -437,9 +587,8 @@ class DownloadQueueService
         true;
 
     try {
-      while (true) {
-        DownloadTask?
-            nextTask;
+      while (!_sessionResetting) {
+        DownloadTask? nextTask;
 
         for (final task
             in _tasks.reversed) {
@@ -451,8 +600,7 @@ class DownloadQueueService
           }
         }
 
-        if (nextTask ==
-            null) {
+        if (nextTask == null) {
           break;
         }
 
@@ -465,12 +613,33 @@ class DownloadQueueService
           false;
 
       _notifyStructure();
+
+      /*
+       * Uma tarefa pode ter sido adicionada no
+       * instante em que o loop estava terminando.
+       */
+      if (!_sessionResetting &&
+          queuedCount > 0) {
+        _startProcessing();
+      }
     }
   }
+
+  // ============================================================
+  // EXECUTE TASK
+  // ============================================================
 
   Future<void> _executeTask(
     DownloadTask task,
   ) async {
+    /*
+     * A sessão pode ter começado a ser encerrada
+     * entre a seleção da tarefa e este método.
+     */
+    if (_sessionResetting) {
+      return;
+    }
+
     task.status =
         DownloadTaskStatus.downloading;
 
@@ -520,8 +689,7 @@ class DownloadQueueService
           task.receivedBytes =
               received;
 
-          if (total >
-              0) {
+          if (total > 0) {
             task.totalBytes =
                 total;
           }
@@ -539,8 +707,7 @@ class DownloadQueueService
           if (elapsedMilliseconds >=
                   400 ||
               (total > 0 &&
-                  received >=
-                      total)) {
+                  received >= total)) {
             final deltaBytes =
                 received -
                     lastSampleBytes;
@@ -549,16 +716,13 @@ class DownloadQueueService
                 elapsedMilliseconds /
                     1000.0;
 
-            if (seconds >
-                    0 &&
-                deltaBytes >=
-                    0) {
+            if (seconds > 0 &&
+                deltaBytes >= 0) {
               final instantSpeed =
                   deltaBytes /
                       seconds;
 
-              if (task.bytesPerSecond <=
-                  0) {
+              if (task.bytesPerSecond <= 0) {
                 task.bytesPerSecond =
                     instantSpeed;
               } else {
@@ -569,20 +733,16 @@ class DownloadQueueService
                             0.35);
               }
 
-              if (task.totalBytes >
-                      0 &&
-                  task.bytesPerSecond >
-                      0) {
+              if (task.totalBytes > 0 &&
+                  task.bytesPerSecond > 0) {
                 final remainingBytes =
                     task.totalBytes -
                         received;
 
-                if (remainingBytes >
-                    0) {
+                if (remainingBytes > 0) {
                   final remainingSeconds =
                       remainingBytes /
-                          task
-                              .bytesPerSecond;
+                          task.bytesPerSecond;
 
                   task.estimatedRemaining =
                       Duration(
@@ -613,8 +773,7 @@ class DownloadQueueService
       task.filePath =
           path;
 
-      if (task.totalBytes >
-          0) {
+      if (task.totalBytes > 0) {
         task.receivedBytes =
             task.totalBytes;
       }
@@ -649,6 +808,10 @@ class DownloadQueueService
     );
   }
 
+  // ============================================================
+  // PROGRESS NOTIFICATIONS
+  // ============================================================
+
   void _scheduleProgressNotification(
     DownloadTask task,
   ) {
@@ -671,8 +834,7 @@ class DownloadQueueService
       return;
     }
 
-    if (_progressUiTimer !=
-        null) {
+    if (_progressUiTimer != null) {
       return;
     }
 
@@ -742,16 +904,18 @@ class DownloadQueueService
     String id,
   ) {
     final notifier =
-        _taskRevisions[
-            id];
+        _taskRevisions[id];
 
-    if (notifier ==
-        null) {
+    if (notifier == null) {
       return;
     }
 
     notifier.value++;
   }
+
+  // ============================================================
+  // DISPOSE
+  // ============================================================
 
   @override
   void dispose() {
