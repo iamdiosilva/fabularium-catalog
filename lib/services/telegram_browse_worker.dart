@@ -9,6 +9,11 @@ import '../models/telegram_message.dart';
 import 'telegram_client.dart';
 import 'telegram_service.dart';
 
+typedef TelegramSessionInvalidHandler =
+    FutureOr<void> Function(
+  String errorMessage,
+);
+
 class TelegramBrowseWorker {
   TelegramBrowseWorker._();
 
@@ -75,6 +80,96 @@ class TelegramBrowseWorker {
   int _nextRequestId = 0;
 
   bool _disposed = false;
+
+  TelegramSessionInvalidHandler?
+      _sessionInvalidHandler;
+
+  bool _sessionInvalidNotified = false;
+
+  // ============================================================
+  // SESSION INVALID HANDLER
+  // ============================================================
+
+  void setSessionInvalidHandler(
+    TelegramSessionInvalidHandler? handler,
+  ) {
+    _sessionInvalidHandler =
+        handler;
+  }
+
+  bool _isInvalidSessionError(
+    String message,
+  ) {
+    return message.contains(
+          'AUTH_KEY_UNREGISTERED',
+        ) ||
+        message.contains(
+          'AUTH_KEY_INVALID',
+        ) ||
+        message.contains(
+          'SESSION_REVOKED',
+        ) ||
+        message.contains(
+          'SESSION_EXPIRED',
+        );
+  }
+
+  void _notifySessionInvalid(
+    String errorMessage,
+  ) {
+    if (_sessionInvalidNotified) {
+      return;
+    }
+
+    _sessionInvalidNotified =
+        true;
+
+    final exception =
+        TelegramSessionInvalidException(
+      errorMessage,
+    );
+
+    /*
+     * Derruba imediatamente este worker.
+     *
+     * Também limpamos os caches porque eles
+     * pertencem à sessão que acabou de se
+     * tornar inválida.
+     */
+    unawaited(
+      reset(
+        reason: exception,
+        clearCache: true,
+      ),
+    );
+
+    final handler =
+        _sessionInvalidHandler;
+
+    if (handler == null) {
+      return;
+    }
+
+    /*
+     * Executamos o callback fora da pilha
+     * atual do ReceivePort.
+     *
+     * Isso evita reentrância enquanto ainda
+     * estamos terminando de processar a
+     * resposta que detectou a sessão inválida.
+     */
+    unawaited(
+      Future<void>(
+        () async {
+          try {
+            await handler(
+              errorMessage,
+            );
+          } catch (_) {}
+        },
+      ),
+    );
+  }
 
   // ============================================================
   // GROUPS
@@ -165,7 +260,10 @@ class TelegramBrowseWorker {
       );
 
       if (cached != null) {
-        // Marca este grupo como o mais recentemente usado.
+        /*
+         * Remove + insere novamente para marcar
+         * este grupo como o mais recentemente usado.
+         */
         _messagesCache[key] =
             cached;
 
@@ -337,14 +435,18 @@ class TelegramBrowseWorker {
 
     _pendingGroups[requestId] =
         _PendingGroupsRequest(
-      completer: completer,
-      timeout: timeout,
+      completer:
+          completer,
+      timeout:
+          timeout,
     );
 
     commandPort.send(
       <String, dynamic>{
-        'type': 'groups',
-        'requestId': requestId,
+        'type':
+            'groups',
+        'requestId':
+            requestId,
       },
     );
 
@@ -412,16 +514,22 @@ class TelegramBrowseWorker {
 
     _pendingMessages[requestId] =
         _PendingMessagesRequest(
-      completer: completer,
-      timeout: timeout,
+      completer:
+          completer,
+      timeout:
+          timeout,
     );
 
     commandPort.send(
       <String, dynamic>{
-        'type': 'messages',
-        'requestId': requestId,
-        'group': group,
-        'limit': limit,
+        'type':
+            'messages',
+        'requestId':
+            requestId,
+        'group':
+            group,
+        'limit':
+            limit,
       },
     );
 
@@ -522,6 +630,16 @@ class TelegramBrowseWorker {
               error.first.toString();
         }
 
+        if (_isInvalidSessionError(
+          message,
+        )) {
+          _notifySessionInvalid(
+            message,
+          );
+
+          return;
+        }
+
         _scheduleReset(
           Exception(
             message,
@@ -553,7 +671,8 @@ class TelegramBrowseWorker {
         eventPort.sendPort,
         debugName:
             'FabulariumTelegramBrowseWorker',
-        errorsAreFatal: true,
+        errorsAreFatal:
+            true,
         onError:
             errorPort.sendPort,
         onExit:
@@ -562,9 +681,17 @@ class TelegramBrowseWorker {
 
       await readyCompleter.future;
     } catch (error) {
-      _scheduleReset(
-        error,
-      );
+      if (_isInvalidSessionError(
+        error.toString(),
+      )) {
+        _notifySessionInvalid(
+          error.toString(),
+        );
+      } else {
+        _scheduleReset(
+          error,
+        );
+      }
 
       rethrow;
     }
@@ -597,6 +724,15 @@ class TelegramBrowseWorker {
         _commandPort =
             port;
 
+        /*
+         * Uma nova conexão foi estabelecida.
+         *
+         * Permitimos que uma futura sessão
+         * inválida seja reportada novamente.
+         */
+        _sessionInvalidNotified =
+            false;
+
         final ready =
             _readyCompleter;
 
@@ -610,10 +746,23 @@ class TelegramBrowseWorker {
     }
 
     if (type == 'fatal') {
+      final errorMessage =
+          message['error']?.toString() ??
+              'Telegram browse worker fatal error.';
+
+      if (_isInvalidSessionError(
+        errorMessage,
+      )) {
+        _notifySessionInvalid(
+          errorMessage,
+        );
+
+        return;
+      }
+
       _scheduleReset(
         Exception(
-          message['error']?.toString() ??
-              'Telegram browse worker fatal error.',
+          errorMessage,
         ),
       );
 
@@ -665,11 +814,43 @@ class TelegramBrowseWorker {
     pending.timeout.cancel();
 
     if (type == 'groupsError') {
+      final errorMessage =
+          message['error']?.toString() ??
+              'Erro ao carregar grupos.';
+
+      if (_isInvalidSessionError(
+        errorMessage,
+      )) {
+        final exception =
+            TelegramSessionInvalidException(
+          errorMessage,
+        );
+
+        /*
+         * Primeiro finalizamos o Future
+         * da tela que fez esta chamada.
+         */
+        if (!pending.completer.isCompleted) {
+          pending.completer.completeError(
+            exception,
+          );
+        }
+
+        /*
+         * Depois propagamos a invalidação
+         * para o main isolate.
+         */
+        _notifySessionInvalid(
+          errorMessage,
+        );
+
+        return;
+      }
+
       if (!pending.completer.isCompleted) {
         pending.completer.completeError(
           Exception(
-            message['error']?.toString() ??
-                'Erro ao carregar grupos.',
+            errorMessage,
           ),
         );
       }
@@ -695,7 +876,8 @@ class TelegramBrowseWorker {
     final groups =
         <TelegramGroup>[];
 
-    for (final dynamic raw in rawGroups) {
+    for (final dynamic raw
+        in rawGroups) {
       if (raw is! Map) {
         continue;
       }
@@ -740,11 +922,35 @@ class TelegramBrowseWorker {
     pending.timeout.cancel();
 
     if (type == 'messagesError') {
+      final errorMessage =
+          message['error']?.toString() ??
+              'Erro ao carregar mensagens.';
+
+      if (_isInvalidSessionError(
+        errorMessage,
+      )) {
+        final exception =
+            TelegramSessionInvalidException(
+          errorMessage,
+        );
+
+        if (!pending.completer.isCompleted) {
+          pending.completer.completeError(
+            exception,
+          );
+        }
+
+        _notifySessionInvalid(
+          errorMessage,
+        );
+
+        return;
+      }
+
       if (!pending.completer.isCompleted) {
         pending.completer.completeError(
           Exception(
-            message['error']?.toString() ??
-                'Erro ao carregar mensagens.',
+            errorMessage,
           ),
         );
       }
@@ -795,7 +1001,8 @@ class TelegramBrowseWorker {
   ) {
     unawaited(
       reset(
-        reason: reason,
+        reason:
+            reason,
       ),
     );
   }
@@ -933,7 +1140,8 @@ class TelegramBrowseWorker {
 
     _pendingGroups.clear();
 
-    for (final request in groups) {
+    for (final request
+        in groups) {
       request.timeout.cancel();
 
       if (!request.completer.isCompleted) {
@@ -948,7 +1156,8 @@ class TelegramBrowseWorker {
 
     _pendingMessages.clear();
 
-    for (final request in messages) {
+    for (final request
+        in messages) {
       request.timeout.cancel();
 
       if (!request.completer.isCompleted) {
@@ -989,9 +1198,13 @@ class TelegramBrowseWorker {
     _disposed =
         true;
 
+    _sessionInvalidHandler =
+        null;
+
     _commandPort?.send(
       <String, dynamic>{
-        'type': 'shutdown',
+        'type':
+            'shutdown',
       },
     );
 
@@ -1006,7 +1219,8 @@ class TelegramBrowseWorker {
           StateError(
         'Telegram browse worker disposed.',
       ),
-      clearCache: true,
+      clearCache:
+          true,
     );
   }
 }
@@ -1018,6 +1232,19 @@ class TelegramBrowseWorkerResetException
   @override
   String toString() =>
       'Telegram browse worker reset.';
+}
+
+class TelegramSessionInvalidException
+    implements Exception {
+  final String errorMessage;
+
+  const TelegramSessionInvalidException(
+    this.errorMessage,
+  );
+
+  @override
+  String toString() =>
+      'Telegram session invalid: $errorMessage';
 }
 
 class _PendingGroupsRequest {
@@ -1066,7 +1293,8 @@ Future<void> _telegramBrowseWorkerEntryPoint(
 
     eventPort.send(
       <String, dynamic>{
-        'type': 'ready',
+        'type':
+            'ready',
         'commandPort':
             commandPort.sendPort,
       },
@@ -1164,7 +1392,8 @@ Future<void> _telegramBrowseWorkerEntryPoint(
                   .instance
                   .getMessages(
             group,
-            limit: limit,
+            limit:
+                limit,
           );
 
           eventPort.send(
@@ -1225,16 +1454,20 @@ Future<List<Map<String, dynamic>>>
 ) async {
   final response =
       await client.messages.getDialogs(
-    excludePinned: false,
+    excludePinned:
+        false,
     offsetDate:
         DateTime.fromMillisecondsSinceEpoch(
       0,
     ),
-    offsetId: 0,
+    offsetId:
+        0,
     offsetPeer:
         const t.InputPeerEmpty(),
-    limit: 100,
-    hash: 0,
+    limit:
+        100,
+    hash:
+        0,
   );
 
   final error =
@@ -1269,7 +1502,8 @@ Future<List<Map<String, dynamic>>>
   final groups =
       <Map<String, dynamic>>[];
 
-  for (final dynamic chat in chats) {
+  for (final dynamic chat
+      in chats) {
     final runtimeType =
         chat.runtimeType.toString();
 
@@ -1292,7 +1526,8 @@ Future<List<Map<String, dynamic>>>
       continue;
     }
 
-    if (runtimeType != 'Channel') {
+    if (runtimeType !=
+        'Channel') {
       continue;
     }
 
