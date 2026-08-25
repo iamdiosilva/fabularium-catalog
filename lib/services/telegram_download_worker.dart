@@ -11,15 +11,13 @@ class TelegramDownloadWorker {
   static final TelegramDownloadWorker instance =
       TelegramDownloadWorker._();
 
-  final _PersistentTelegramWorker
-      _downloadWorker =
+  final _PersistentTelegramWorker _downloadWorker =
       _PersistentTelegramWorker(
     mode:
         _TelegramWorkerMode.download,
   );
 
-  final _PersistentTelegramWorker
-      _previewWorker =
+  final _PersistentTelegramWorker _previewWorker =
       _PersistentTelegramWorker(
     mode:
         _TelegramWorkerMode.preview,
@@ -57,6 +55,24 @@ class TelegramDownloadWorker {
     );
   }
 
+  /*
+   * Chamado pelo PerformanceCoordinator.
+   *
+   * Não inicia o worker.
+   *
+   * Se ainda não existir socket/worker,
+   * apenas guarda o estado para aplicar
+   * posteriormente.
+   */
+  void setInteractiveMode(
+    bool interactive,
+  ) {
+    _downloadWorker
+        .setInteractiveMode(
+      interactive,
+    );
+  }
+
   Future<void> dispose() async {
     await Future.wait(
       [
@@ -84,9 +100,7 @@ class _PersistentTelegramWorker {
   SendPort? _commandPort;
 
   ReceivePort? _eventPort;
-
   ReceivePort? _errorPort;
-
   ReceivePort? _exitPort;
 
   StreamSubscription<dynamic>?
@@ -112,6 +126,38 @@ class _PersistentTelegramWorker {
   bool _disposed =
       false;
 
+  bool _interactiveMode =
+      false;
+
+  void setInteractiveMode(
+    bool value,
+  ) {
+    _interactiveMode =
+        value;
+
+    if (mode !=
+        _TelegramWorkerMode.download) {
+      return;
+    }
+
+    final commandPort =
+        _commandPort;
+
+    if (commandPort ==
+        null) {
+      return;
+    }
+
+    commandPort.send(
+      <String, dynamic>{
+        'type':
+            'interactive',
+        'value':
+            value,
+      },
+    );
+  }
+
   Future<String> execute({
     required String type,
     required TelegramMedia media,
@@ -133,7 +179,8 @@ class _PersistentTelegramWorker {
     final commandPort =
         _commandPort;
 
-    if (commandPort == null) {
+    if (commandPort ==
+        null) {
       throw StateError(
         'Telegram worker is not available.',
       );
@@ -145,8 +192,7 @@ class _PersistentTelegramWorker {
     final completer =
         Completer<String>();
 
-    _pending[
-            requestId] =
+    _pending[requestId] =
         _PendingWorkerRequest(
       completer:
           completer,
@@ -171,14 +217,16 @@ class _PersistentTelegramWorker {
   }
 
   Future<void> _ensureStarted() {
-    if (_commandPort != null) {
+    if (_commandPort !=
+        null) {
       return Future<void>.value();
     }
 
     final existing =
         _startFuture;
 
-    if (existing != null) {
+    if (existing !=
+        null) {
       return existing;
     }
 
@@ -223,7 +271,9 @@ class _PersistentTelegramWorker {
 
     _errorSubscription =
         errorPort.listen(
-      (dynamic error) {
+      (
+        dynamic error,
+      ) {
         String message =
             error.toString();
 
@@ -233,19 +283,19 @@ class _PersistentTelegramWorker {
               error.first.toString();
         }
 
+        final exception =
+            TelegramDownloadWorkerException(
+          message,
+        );
+
         _failAll(
-          TelegramDownloadWorkerException(
-            message,
-          ),
+          exception,
         );
 
         if (!readyCompleter
             .isCompleted) {
-          readyCompleter
-              .completeError(
-            TelegramDownloadWorkerException(
-              message,
-            ),
+          readyCompleter.completeError(
+            exception,
           );
         }
       },
@@ -264,19 +314,19 @@ class _PersistentTelegramWorker {
             null;
 
         if (!_disposed) {
+          const exception =
+              TelegramDownloadWorkerException(
+            'Telegram worker stopped unexpectedly.',
+          );
+
           _failAll(
-            const TelegramDownloadWorkerException(
-              'Telegram worker stopped unexpectedly.',
-            ),
+            exception,
           );
 
           if (!readyCompleter
               .isCompleted) {
-            readyCompleter
-                .completeError(
-              const TelegramDownloadWorkerException(
-                'Telegram worker stopped during initialization.',
-              ),
+            readyCompleter.completeError(
+              exception,
             );
           }
         }
@@ -320,8 +370,7 @@ class _PersistentTelegramWorker {
   void _handleEvent(
     dynamic rawMessage,
   ) {
-    if (rawMessage
-        is! Map) {
+    if (rawMessage is! Map) {
       return;
     }
 
@@ -336,13 +385,30 @@ class _PersistentTelegramWorker {
     if (type ==
         'ready') {
       final commandPort =
-          message[
-              'commandPort'];
+          message['commandPort'];
 
       if (commandPort
           is SendPort) {
         _commandPort =
             commandPort;
+
+        /*
+         * Aplica imediatamente o estado
+         * atual, caso o usuário já estivesse
+         * navegando quando o worker iniciou.
+         */
+        if (mode ==
+            _TelegramWorkerMode
+                .download) {
+          commandPort.send(
+            <String, dynamic>{
+              'type':
+                  'interactive',
+              'value':
+                  _interactiveMode,
+            },
+          );
+        }
 
         final readyCompleter =
             _readyCompleter;
@@ -351,8 +417,7 @@ class _PersistentTelegramWorker {
                 null &&
             !readyCompleter
                 .isCompleted) {
-          readyCompleter
-              .complete();
+          readyCompleter.complete();
         }
       }
 
@@ -367,8 +432,7 @@ class _PersistentTelegramWorker {
                 ?.toString() ??
             'Fatal Telegram worker error.',
         stackTrace:
-            message[
-                    'stackTrace']
+            message['stackTrace']
                 ?.toString(),
       );
 
@@ -379,8 +443,7 @@ class _PersistentTelegramWorker {
               null &&
           !readyCompleter
               .isCompleted) {
-        readyCompleter
-            .completeError(
+        readyCompleter.completeError(
           error,
         );
       }
@@ -393,17 +456,14 @@ class _PersistentTelegramWorker {
     }
 
     final requestId =
-        message[
-            'requestId'];
+        message['requestId'];
 
-    if (requestId
-        is! int) {
+    if (requestId is! int) {
       return;
     }
 
     final pending =
-        _pending[
-            requestId];
+        _pending[requestId];
 
     if (pending ==
         null) {
@@ -413,18 +473,14 @@ class _PersistentTelegramWorker {
     if (type ==
         'progress') {
       final received =
-          message[
-              'received'];
+          message['received'];
 
       final total =
-          message[
-              'total'];
+          message['total'];
 
       if (received is int &&
           total is int) {
-        pending
-            .onProgress
-            ?.call(
+        pending.onProgress?.call(
           received,
           total,
         );
@@ -440,16 +496,13 @@ class _PersistentTelegramWorker {
       );
 
       final path =
-          message[
-              'path'];
+          message['path'];
 
       if (path is String) {
         if (!pending
             .completer
             .isCompleted) {
-          pending
-              .completer
-              .complete(
+          pending.completer.complete(
             path,
           );
         }
@@ -457,9 +510,7 @@ class _PersistentTelegramWorker {
         if (!pending
             .completer
             .isCompleted) {
-          pending
-              .completer
-              .completeError(
+          pending.completer.completeError(
             const TelegramDownloadWorkerException(
               'Worker completed without returning a file path.',
             ),
@@ -479,16 +530,13 @@ class _PersistentTelegramWorker {
       if (!pending
           .completer
           .isCompleted) {
-        pending
-            .completer
-            .completeError(
+        pending.completer.completeError(
           TelegramDownloadWorkerException(
             message['error']
                     ?.toString() ??
                 'Unknown Telegram worker error.',
             stackTrace:
-                message[
-                        'stackTrace']
+                message['stackTrace']
                     ?.toString(),
           ),
         );
@@ -500,8 +548,7 @@ class _PersistentTelegramWorker {
     Object error,
   ) {
     final pendingRequests =
-        _pending.values
-            .toList();
+        _pending.values.toList();
 
     _pending.clear();
 
@@ -510,9 +557,7 @@ class _PersistentTelegramWorker {
       if (!pending
           .completer
           .isCompleted) {
-        pending
-            .completer
-            .completeError(
+        pending.completer.completeError(
           error,
         );
       }
@@ -568,9 +613,7 @@ class _PersistentTelegramWorker {
         ?.cancel();
 
     _eventPort?.close();
-
     _errorPort?.close();
-
     _exitPort?.close();
 
     _eventPort =
@@ -616,25 +659,39 @@ class TelegramDownloadWorkerException
       message;
 }
 
+class _DownloadRuntimePolicy {
+  bool interactive =
+      false;
+
+  int get maxInFlight =>
+      interactive
+          ? 1
+          : 4;
+
+  Duration get yieldDelay =>
+      interactive
+          ? const Duration(
+              milliseconds:
+                  8,
+            )
+          : Duration.zero;
+}
+
 @pragma(
   'vm:entry-point',
 )
-Future<void>
-    _telegramPersistentWorkerEntryPoint(
+Future<void> _telegramPersistentWorkerEntryPoint(
   Map<String, dynamic> bootstrap,
 ) async {
   final eventPort =
-      bootstrap[
-          'eventPort'];
+      bootstrap['eventPort'];
 
-  if (eventPort
-      is! SendPort) {
+  if (eventPort is! SendPort) {
     return;
   }
 
   final mode =
-      bootstrap[
-              'mode']
+      bootstrap['mode']
           ?.toString();
 
   final commandPort =
@@ -643,15 +700,13 @@ Future<void>
   final telegramClient =
       TelegramClient.instance;
 
+  final runtimePolicy =
+      _DownloadRuntimePolicy();
+
+  Future<void>? activeDownload;
+
   try {
-    /*
-     * A conexão é aberta apenas uma vez.
-     *
-     * Como o isolate permanece vivo,
-     * os DCs e pools permanecem aquecidos.
-     */
-    await telegramClient
-        .connect();
+    await telegramClient.connect();
 
     eventPort.send(
       <String, dynamic>{
@@ -664,8 +719,7 @@ Future<void>
 
     await for (final dynamic rawCommand
         in commandPort) {
-      if (rawCommand
-          is! Map) {
+      if (rawCommand is! Map) {
         continue;
       }
 
@@ -675,26 +729,48 @@ Future<void>
       );
 
       final type =
-          command[
-              'type'];
+          command['type'];
+
+      /*
+       * Esse comando pode ser recebido mesmo
+       * enquanto o download está acontecendo.
+       */
+      if (type ==
+          'interactive') {
+        runtimePolicy.interactive =
+            command['value'] ==
+                true;
+
+        continue;
+      }
 
       if (type ==
           'shutdown') {
+        /*
+         * Em encerramento normal deixamos
+         * a operação corrente finalizar.
+         */
+        final current =
+            activeDownload;
+
+        if (current !=
+            null) {
+          try {
+            await current;
+          } catch (_) {}
+        }
+
         break;
       }
 
       final requestId =
-          command[
-              'requestId'];
+          command['requestId'];
 
       final media =
-          command[
-              'media'];
+          command['media'];
 
-      if (requestId
-              is! int ||
-          media
-              is! TelegramMedia) {
+      if (requestId is! int ||
+          media is! TelegramMedia) {
         continue;
       }
 
@@ -703,7 +779,30 @@ Future<void>
                   .download.name &&
           type ==
               'download') {
-        await _executeDownloadCommand(
+        /*
+         * A fila global já garante um arquivo
+         * grande por vez.
+         *
+         * Mesmo assim protegemos o worker.
+         */
+        if (activeDownload !=
+            null) {
+          eventPort.send(
+            <String, dynamic>{
+              'type':
+                  'error',
+              'requestId':
+                  requestId,
+              'error':
+                  'Download worker is already busy.',
+            },
+          );
+
+          continue;
+        }
+
+        final operation =
+            _executeDownloadCommand(
           eventPort:
               eventPort,
           requestId:
@@ -711,12 +810,33 @@ Future<void>
           media:
               media,
           groupTitle:
-              command[
-                      'groupTitle']
-                  ?.toString() ??
+              command['groupTitle']
+                      ?.toString() ??
                   'Telegram',
+          runtimePolicy:
+              runtimePolicy,
         );
 
+        activeDownload =
+            operation;
+
+        unawaited(
+          operation.whenComplete(
+            () {
+              activeDownload =
+                  null;
+            },
+          ),
+        );
+
+        /*
+         * IMPORTANTE:
+         *
+         * NÃO await aqui.
+         *
+         * O loop continua livre para receber
+         * interactive=true/false.
+         */
         continue;
       }
 
@@ -725,6 +845,9 @@ Future<void>
                   .preview.name &&
           type ==
               'preview') {
+        /*
+         * Preview continua sequencial.
+         */
         await _executePreviewCommand(
           eventPort:
               eventPort,
@@ -753,18 +876,17 @@ Future<void>
     commandPort.close();
 
     try {
-      await telegramClient
-          .disconnect();
+      await telegramClient.disconnect();
     } catch (_) {}
   }
 }
 
-Future<void>
-    _executeDownloadCommand({
+Future<void> _executeDownloadCommand({
   required SendPort eventPort,
   required int requestId,
   required TelegramMedia media,
   required String groupTitle,
+  required _DownloadRuntimePolicy runtimePolicy,
 }) async {
   int lastReceived =
       0;
@@ -830,6 +952,14 @@ Future<void>
       media,
       groupTitle:
           groupTitle,
+      maxInFlightProvider:
+          () =>
+              runtimePolicy
+                  .maxInFlight,
+      yieldDelayProvider:
+          () =>
+              runtimePolicy
+                  .yieldDelay,
       onProgress:
           (
         received,
@@ -884,8 +1014,7 @@ Future<void>
   }
 }
 
-Future<void>
-    _executePreviewCommand({
+Future<void> _executePreviewCommand({
   required SendPort eventPort,
   required int requestId,
   required TelegramMedia media,

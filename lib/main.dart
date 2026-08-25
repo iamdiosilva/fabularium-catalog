@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'pages/catalog_page.dart';
 import 'pages/download_queue_page.dart';
 import 'services/performance_monitor.dart';
+import 'services/telegram_service_coordinator.dart';
 import 'widgets/download_queue_overlay.dart';
 
 final GlobalKey<NavigatorState>
@@ -31,9 +32,15 @@ class FabulariumApp
   Widget build(
     BuildContext context,
   ) {
+    final performance =
+        TelegramPerformanceCoordinator.instance;
+
     return MaterialApp(
       navigatorKey:
           rootNavigatorKey,
+      navigatorObservers: [
+        performance,
+      ],
       title:
           'Fabularium',
       debugShowCheckedModeBanner:
@@ -50,16 +57,46 @@ class FabulariumApp
         context,
         child,
       ) {
-        return Stack(
-          children: [
-            if (child != null)
-              child,
+        /*
+         * Qualquer interação do usuário
+         * coloca temporariamente o download
+         * em modo interativo.
+         */
+        return Listener(
+          behavior:
+              HitTestBehavior.translucent,
 
-            DownloadQueueOverlay(
-              onOpen:
-                  _openDownloads,
-            ),
-          ],
+          onPointerDown:
+              (_) {
+            performance
+                .noteInteraction();
+          },
+
+          onPointerMove:
+              (_) {
+            performance
+                .noteInteraction();
+          },
+
+          onPointerSignal:
+              (_) {
+            performance
+                .noteInteraction();
+          },
+
+          child:
+              Stack(
+            children: [
+              if (child !=
+                  null)
+                child,
+
+              DownloadQueueOverlay(
+                onOpen:
+                    _openDownloads,
+              ),
+            ],
+          ),
         );
       },
       home:
@@ -75,7 +112,8 @@ class FabulariumApp
         rootNavigatorKey
             .currentState;
 
-    if (navigator == null) {
+    if (navigator ==
+        null) {
       return;
     }
 

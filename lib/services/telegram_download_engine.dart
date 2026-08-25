@@ -26,7 +26,7 @@ class TelegramDownloadEngine {
   static const int _connectionCount =
       4;
 
-  static const int _maxInFlight =
+  static const int _defaultMaxInFlight =
       4;
 
   // ============================================================
@@ -41,6 +41,8 @@ class TelegramDownloadEngine {
       int total,
     )?
         onProgress,
+    int Function()? maxInFlightProvider,
+    Duration Function()? yieldDelayProvider,
   }) async {
     final directory =
         await _getDownloadDirectory(
@@ -68,6 +70,10 @@ class TelegramDownloadEngine {
           media.size,
       onProgress:
           onProgress,
+      maxInFlightProvider:
+          maxInFlightProvider,
+      yieldDelayProvider:
+          yieldDelayProvider,
     );
   }
 
@@ -81,7 +87,8 @@ class TelegramDownloadEngine {
     final location =
         media.previewLocation;
 
-    if (location == null) {
+    if (location ==
+        null) {
       throw StateError(
         'Preview is not available.',
       );
@@ -117,8 +124,7 @@ class TelegramDownloadEngine {
 
   Future<String> _downloadLargeLocation({
     required int initialDcId,
-    required t.InputFileLocationBase
-        location,
+    required t.InputFileLocationBase location,
     required File destination,
     required int expectedSize,
     void Function(
@@ -126,6 +132,8 @@ class TelegramDownloadEngine {
       int total,
     )?
         onProgress,
+    int Function()? maxInFlightProvider,
+    Duration Function()? yieldDelayProvider,
   }) async {
     await destination.parent.create(
       recursive:
@@ -136,7 +144,8 @@ class TelegramDownloadEngine {
       final size =
           await destination.length();
 
-      if (expectedSize <= 0 ||
+      if (expectedSize <=
+              0 ||
           size ==
               expectedSize) {
         onProgress?.call(
@@ -157,6 +166,13 @@ class TelegramDownloadEngine {
       await tempFile.delete();
     }
 
+    /*
+     * Continuamos mantendo quatro conexões
+     * prontas.
+     *
+     * O modo interativo apenas reduz a
+     * quantidade simultaneamente utilizada.
+     */
     await _telegramClient
         .warmDownloadPool(
       initialDcId,
@@ -172,8 +188,7 @@ class TelegramDownloadEngine {
 
     if (expectedSize >
         0) {
-      await randomAccessFile
-          .truncate(
+      await randomAccessFile.truncate(
         expectedSize,
       );
     }
@@ -198,9 +213,33 @@ class TelegramDownloadEngine {
 
     int? discoveredEnd;
 
+    int desiredMaxInFlight() {
+      int result =
+          maxInFlightProvider
+                  ?.call() ??
+              _defaultMaxInFlight;
+
+      if (result <
+          1) {
+        result =
+            1;
+      }
+
+      if (result >
+          _connectionCount) {
+        result =
+            _connectionCount;
+      }
+
+      return result;
+    }
+
     void fillWindow() {
+      final maxInFlight =
+          desiredMaxInFlight();
+
       while (inFlight.length <
-          _maxInFlight) {
+          maxInFlight) {
         if (expectedSize >
                 0 &&
             nextOffset >=
@@ -222,8 +261,7 @@ class TelegramDownloadEngine {
             nextChunkIndex %
                 _connectionCount;
 
-        inFlight[
-                offset] =
+        inFlight[offset] =
             _downloadChunk(
           initialDcId:
               initialDcId,
@@ -296,6 +334,32 @@ class TelegramDownloadEngine {
           );
         }
 
+        /*
+         * Durante navegação damos um pequeno
+         * espaço para o scheduler distribuir
+         * CPU para os outros isolates e para
+         * o Flutter/Raster.
+         */
+        final yieldDelay =
+            yieldDelayProvider
+                    ?.call() ??
+                Duration.zero;
+
+        if (yieldDelay.inMicroseconds >
+            0) {
+          await Future<void>.delayed(
+            yieldDelay,
+          );
+        }
+
+        /*
+         * O valor é consultado novamente.
+         *
+         * Se o usuário começou a navegar,
+         * pode cair de 4 para 1 imediatamente.
+         *
+         * Se parou de navegar, volta para 4.
+         */
         fillWindow();
       }
 
@@ -356,8 +420,7 @@ class TelegramDownloadEngine {
 
   Future<String> _downloadSmallLocation({
     required int initialDcId,
-    required t.InputFileLocationBase
-        location,
+    required t.InputFileLocationBase location,
     required File destination,
     required int expectedSize,
   }) async {
@@ -390,12 +453,6 @@ class TelegramDownloadEngine {
       await temp.delete();
     }
 
-    /*
-     * Preview worker uses only one dedicated
-     * media session.
-     *
-     * This prevents a thumbnail storm.
-     */
     int dcId =
         initialDcId;
 
@@ -421,8 +478,7 @@ class TelegramDownloadEngine {
     try {
       while (true) {
         final response =
-            await client.upload
-                .getFile(
+            await client.upload.getFile(
           precise:
               false,
           cdnSupported:
@@ -435,7 +491,8 @@ class TelegramDownloadEngine {
               _previewChunkSize,
         );
 
-        if (response.error != null) {
+        if (response.error !=
+            null) {
           final errorMessage =
               response
                   .error!
@@ -446,7 +503,8 @@ class TelegramDownloadEngine {
             errorMessage,
           );
 
-          if (migrateDc != null) {
+          if (migrateDc !=
+              null) {
             migrations++;
 
             if (migrations >
@@ -477,7 +535,8 @@ class TelegramDownloadEngine {
         final dynamic result =
             response.result;
 
-        if (result == null) {
+        if (result ==
+            null) {
           throw Exception(
             'Telegram returned an empty preview response.',
           );
@@ -539,7 +598,9 @@ class TelegramDownloadEngine {
     return temp.rename(
       destination.path,
     ).then(
-      (file) =>
+      (
+        file,
+      ) =>
           file.path,
     );
   }
@@ -548,12 +609,10 @@ class TelegramDownloadEngine {
   // CHUNK
   // ============================================================
 
-  Future<_TelegramDownloadChunk>
-      _downloadChunk({
+  Future<_TelegramDownloadChunk> _downloadChunk({
     required int initialDcId,
     required int slot,
-    required t.InputFileLocationBase
-        location,
+    required t.InputFileLocationBase location,
     required int offset,
     required int limit,
   }) async {
@@ -572,8 +631,7 @@ class TelegramDownloadEngine {
       );
 
       final response =
-          await client.upload
-              .getFile(
+          await client.upload.getFile(
         precise:
             false,
         cdnSupported:
@@ -589,7 +647,8 @@ class TelegramDownloadEngine {
       final error =
           response.error;
 
-      if (error != null) {
+      if (error !=
+          null) {
         final migrateDc =
             _extractMigrationDc(
           error.errorMessage,
@@ -620,7 +679,8 @@ class TelegramDownloadEngine {
       final dynamic result =
           response.result;
 
-      if (result == null) {
+      if (result ==
+          null) {
         throw Exception(
           'Telegram returned an empty file response.',
         );
@@ -695,8 +755,7 @@ class TelegramDownloadEngine {
   // DIRECTORIES
   // ============================================================
 
-  Future<Directory>
-      _getDownloadDirectory(
+  Future<Directory> _getDownloadDirectory(
     String groupTitle,
   ) async {
     final userProfile =
@@ -704,8 +763,10 @@ class TelegramDownloadEngine {
             'USERPROFILE'];
 
     final basePath =
-        userProfile != null &&
-                userProfile.isNotEmpty
+        userProfile !=
+                    null &&
+                userProfile
+                    .isNotEmpty
             ? p.join(
                 userProfile,
                 'Downloads',
@@ -732,17 +793,19 @@ class TelegramDownloadEngine {
     return directory;
   }
 
-  Future<Directory>
-      _getCacheDirectory() async {
+  Future<Directory> _getCacheDirectory() async {
     final localAppData =
         Platform.environment[
             'LOCALAPPDATA'];
 
     final basePath =
-        localAppData != null &&
-                localAppData.isNotEmpty
+        localAppData !=
+                    null &&
+                localAppData
+                    .isNotEmpty
             ? localAppData
-            : Directory.systemTemp.path;
+            : Directory
+                .systemTemp.path;
 
     final directory =
         Directory(
@@ -785,7 +848,8 @@ class TelegramDownloadEngine {
       result =
           result.substring(
         0,
-        result.length - 1,
+        result.length -
+            1,
       );
     }
 

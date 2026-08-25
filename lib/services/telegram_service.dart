@@ -68,53 +68,113 @@ class TelegramService {
   // ============================================================
 
   Future<void> connect() async {
-    if (_state ==
-        TelegramAuthState.authenticated) {
-      return;
-    }
+  /*
+   * Depois que autenticamos, o cliente do
+   * MAIN ISOLATE fica desconectado de propósito.
+   *
+   * Portanto não usamos _telegramClient.client
+   * para determinar se estamos conectados.
+   *
+   * O estado authenticated significa:
+   *
+   * - sessão válida;
+   * - telegram_auth.json disponível;
+   * - workers podem criar suas conexões.
+   */
+  if (_state ==
+      TelegramAuthState.authenticated) {
+    return;
+  }
 
-    _setState(
-      TelegramAuthState.connecting,
-    );
+  _setState(
+    TelegramAuthState.connecting,
+  );
 
-    try {
-      final client =
-          await _telegramClient.connect();
+  try {
+    final client =
+        await _telegramClient.connect();
 
-      if (_telegramClient.hasSavedSession) {
-        final valid =
-            await _validateSession(
-          client,
-        );
+    /*
+     * Se já existe uma sessão salva,
+     * validamos uma única vez no MAIN ISOLATE.
+     */
+    if (_telegramClient.hasSavedSession) {
+      final valid =
+          await _validateSession(
+        client,
+      );
 
-        if (valid) {
-          _setState(
-            TelegramAuthState.authenticated,
-          );
+      if (valid) {
+        /*
+         * ======================================================
+         * IMPORTANTE
+         * ======================================================
+         *
+         * A sessão está válida.
+         *
+         * Não precisamos manter TelegramClient,
+         * socket, MTProto, AES ou parsing no
+         * isolate da interface.
+         */
+        await _telegramClient.disconnect();
 
-          return;
-        }
-
-        await _telegramClient
-            .deleteSession();
-
-        await _telegramClient
-            .disconnect();
-
+        /*
+         * Só marcamos como autenticado DEPOIS
+         * de remover completamente a conexão
+         * Telegram do MAIN ISOLATE.
+         */
         _setState(
-          TelegramAuthState.disconnected,
+          TelegramAuthState.authenticated,
         );
 
         return;
       }
 
+      /*
+       * A sessão existe, mas não é mais válida.
+       */
+      await _telegramClient
+          .deleteSession();
+
+      await _telegramClient
+          .disconnect();
+
       _setState(
-        TelegramAuthState.phoneRequired,
+        TelegramAuthState.disconnected,
       );
-    } catch (e) {
-      _setError(e);
+
+      return;
     }
+
+    /*
+     * Não existe sessão ainda.
+     *
+     * Mantemos a conexão aberta porque ainda
+     * precisamos fazer:
+     *
+     * sendCode
+     * signIn
+     * 2FA
+     */
+    _setState(
+      TelegramAuthState.phoneRequired,
+    );
+  } catch (e) {
+    /*
+     * Se houve erro durante a tentativa de
+     * conexão/autenticação, garantimos que
+     * nenhuma conexão parcial fique presa
+     * no MAIN ISOLATE.
+     */
+    try {
+      await _telegramClient.disconnect();
+    } catch (_) {}
+
+    _setError(
+      e,
+    );
   }
+}
 
   Future<bool> _validateSession(
     tg.Client client,
@@ -257,66 +317,116 @@ class TelegramService {
   }
 
   Future<void> signIn(
-    String code,
-  ) async {
-    final client =
-        _telegramClient.client;
+  String code,
+) async {
+  final client =
+      _telegramClient.client;
 
-    final authSentCode =
-        _authSentCode;
+  final authSentCode =
+      _authSentCode;
 
-    final phoneNumber =
-        _phoneNumber;
+  final phoneNumber =
+      _phoneNumber;
 
-    if (client == null ||
-        authSentCode == null ||
-        phoneNumber == null) {
-      _setError(
-        'A autenticação não foi iniciada corretamente.',
+  if (client == null ||
+      authSentCode == null ||
+      phoneNumber == null) {
+    _setError(
+      'A autenticação não foi iniciada corretamente.',
+    );
+
+    return;
+  }
+
+  try {
+    final response =
+        await client.auth.signIn(
+      phoneCodeHash:
+          authSentCode.phoneCodeHash,
+      phoneNumber:
+          phoneNumber,
+      phoneCode:
+          code.trim(),
+    );
+
+    if (response.error == null) {
+      /*
+       * Primeiro persistimos a AuthorizationKey.
+       *
+       * Os workers usarão esse arquivo para
+       * criar suas próprias conexões.
+       */
+      await _telegramClient
+          .saveSession();
+
+      /*
+       * ========================================================
+       * IMPORTANTE
+       * ========================================================
+       *
+       * O login terminou.
+       *
+       * A partir daqui não queremos mais nenhum
+       * TelegramClient/socket no MAIN ISOLATE.
+       */
+      await _telegramClient
+          .disconnect();
+
+      /*
+       * Limpamos os dados temporários utilizados
+       * somente durante a autenticação.
+       */
+      _authSentCode =
+          null;
+
+      _accountPassword =
+          null;
+
+      _phoneNumber =
+          null;
+
+      /*
+       * Mantemos o estado lógico autenticado.
+       *
+       * authenticated NÃO significa que existe
+       * socket Telegram no MAIN ISOLATE.
+       *
+       * Significa apenas que existe uma sessão
+       * válida disponível para os workers.
+       */
+      _setState(
+        TelegramAuthState.authenticated,
       );
 
       return;
     }
 
-    try {
-      final response =
-          await client.auth.signIn(
-        phoneCodeHash:
-            authSentCode.phoneCodeHash,
-        phoneNumber:
-            phoneNumber,
-        phoneCode:
-            code.trim(),
-      );
+    final errorMessage =
+        response.error!.errorMessage;
 
-      if (response.error == null) {
-        await _telegramClient
-            .saveSession();
+    /*
+     * Conta com autenticação em duas etapas.
+     *
+     * Aqui ainda precisamos manter a conexão
+     * do MAIN ISOLATE porque o processo de
+     * autenticação ainda não terminou.
+     */
+    if (errorMessage ==
+        'SESSION_PASSWORD_NEEDED') {
+      await _loadPassword();
 
-        _setState(
-          TelegramAuthState.authenticated,
-        );
-
-        return;
-      }
-
-      final errorMessage =
-          response.error!.errorMessage;
-
-      if (errorMessage ==
-          'SESSION_PASSWORD_NEEDED') {
-        await _loadPassword();
-
-        return;
-      }
-
-      _setError(
-        errorMessage,
-      );
-    } catch (e) {
-      _setError(e);
+      return;
     }
+
+    _setError(
+      errorMessage,
+    );
+  } catch (e) {
+    _setError(
+      e,
+    );
   }
+}
 
   Future<void> _loadPassword() async {
     final client =
@@ -367,55 +477,85 @@ class TelegramService {
   }
 
   Future<void> checkPassword(
-    String password,
-  ) async {
-    final client =
-        _telegramClient.client;
+  String password,
+) async {
+  final client =
+      _telegramClient.client;
 
-    final accountPassword =
-        _accountPassword;
+  final accountPassword =
+      _accountPassword;
 
-    if (client == null ||
-        accountPassword == null) {
+  if (client == null ||
+      accountPassword == null) {
+    _setError(
+      'Informações de 2FA não disponíveis.',
+    );
+
+    return;
+  }
+
+  try {
+    final passwordResult =
+        await tg.check2FA(
+      accountPassword,
+      password,
+    );
+
+    final response =
+        await client.auth
+            .checkPassword(
+      password:
+          passwordResult,
+    );
+
+    if (response.error != null) {
       _setError(
-        'Informações de 2FA não disponíveis.',
+        response.error!.errorMessage,
       );
 
       return;
     }
 
-    try {
-      final passwordResult =
-          await tg.check2FA(
-        accountPassword,
-        password,
-      );
+    /*
+     * Autenticação 2FA terminou.
+     *
+     * Primeiro salvamos a sessão para os
+     * workers.
+     */
+    await _telegramClient
+        .saveSession();
 
-      final response =
-          await client.auth
-              .checkPassword(
-        password:
-            passwordResult,
-      );
+    /*
+     * ==========================================================
+     * REMOVE TELEGRAM DO MAIN ISOLATE
+     * ==========================================================
+     */
+    await _telegramClient
+        .disconnect();
 
-      if (response.error != null) {
-        _setError(
-          response.error!.errorMessage,
-        );
+    _authSentCode =
+        null;
 
-        return;
-      }
+    _accountPassword =
+        null;
 
-      await _telegramClient
-          .saveSession();
+    _phoneNumber =
+        null;
 
-      _setState(
-        TelegramAuthState.authenticated,
-      );
-    } catch (e) {
-      _setError(e);
-    }
+    /*
+     * Continuamos logicamente autenticados,
+     * mesmo sem uma conexão Telegram no
+     * isolate da interface.
+     */
+    _setState(
+      TelegramAuthState.authenticated,
+    );
+  } catch (e) {
+    _setError(
+      e,
+    );
   }
+}
 
   // ============================================================
   // GROUPS
