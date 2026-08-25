@@ -232,7 +232,7 @@ class TelegramDownloadEngine {
         if (discoveredEnd !=
                 null &&
             nextOffset >=
-                discoveredEnd!) {
+                discoveredEnd) {
           break;
         }
 
@@ -286,7 +286,7 @@ class TelegramDownloadEngine {
           if (discoveredEnd ==
                   null ||
               end <
-                  discoveredEnd!) {
+                  discoveredEnd) {
             discoveredEnd =
                 end;
           }
@@ -295,7 +295,7 @@ class TelegramDownloadEngine {
         if (discoveredEnd !=
                 null &&
             chunk.offset >=
-                discoveredEnd!) {
+                discoveredEnd) {
           fillWindow();
 
           continue;

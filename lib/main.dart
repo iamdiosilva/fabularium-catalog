@@ -78,9 +78,7 @@ class FabulariumApp
           child:
               Stack(
             children: [
-              if (child !=
-                  null)
-                child,
+              ?child,
               DownloadQueueOverlay(
                 onOpen:
                     _openDownloads,
