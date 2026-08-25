@@ -2,6 +2,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../models/telegram_storage_channel.dart';
+import '../models/telegram_storage_package.dart';
+import '../services/telegram_storage_packager.dart';
 import '../services/telegram_storage_service.dart';
 
 class TelegramStoragePage
@@ -21,7 +23,12 @@ class _TelegramStoragePageState
   final TelegramStorageService _storage =
       TelegramStorageService.instance;
 
+  final TelegramStoragePackager _packager =
+      TelegramStoragePackager.instance;
+
   TelegramStorageChannel? _channel;
+
+  TelegramStoragePackage? _preparedPackage;
 
   bool _isLoading =
       true;
@@ -35,8 +42,17 @@ class _TelegramStoragePageState
   bool _isUploading =
       false;
 
+  bool _isPackaging =
+      false;
+
   double _uploadProgress =
       0;
+
+  double _packageProgress =
+      0;
+
+  String _packageStage =
+      '';
 
   String? _error;
 
@@ -47,7 +63,8 @@ class _TelegramStoragePageState
   bool get _isBusy =>
       _isCreatingChannel ||
       _isLoadingChannels ||
-      _isUploading;
+      _isUploading ||
+      _isPackaging;
 
   @override
   void initState() {
@@ -211,12 +228,10 @@ class _TelegramStoragePageState
                             .textTheme
                             .bodyMedium,
                   ),
-
                   const SizedBox(
                     height:
                         16,
                   ),
-
                   Expanded(
                     child:
                         ListView.separated(
@@ -315,8 +330,8 @@ class _TelegramStoragePageState
             null;
 
         _status =
-            'Using existing Telegram channel '
-            '"${selected.title}" as Fabularium Storage.';
+            'Using "${selected.title}" '
+            'as Fabularium Storage.';
       });
     } catch (e) {
       if (!mounted) {
@@ -337,7 +352,7 @@ class _TelegramStoragePageState
   }
 
   // ============================================================
-  // UPLOAD FILE
+  // TEST UPLOAD
   // ============================================================
 
   Future<void> _pickAndUpload() async {
@@ -369,32 +384,16 @@ class _TelegramStoragePageState
 
     if (path == null ||
         path.isEmpty) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _error =
-            'Could not access the selected file.';
-      });
-
       return;
     }
 
     if (selected.size >
         TelegramStorageService
             .maxStorageFileBytes) {
-      if (!mounted) {
-        return;
-      }
-
       setState(() {
         _error =
-            'This file is ${_formatSize(selected.size)}. '
-            'The current single-file storage limit '
-            'is ${_formatSize(TelegramStorageService.maxStorageFileBytes)}. '
-            'Automatic splitting will be added in '
-            'the next storage step.';
+            'This file exceeds the single-file '
+            'Telegram Storage limit.';
       });
 
       return;
@@ -481,7 +480,236 @@ class _TelegramStoragePageState
   }
 
   // ============================================================
-  // FORGET LOCAL CONFIG
+  // PREPARE MODEL FOLDER
+  // ============================================================
+
+  Future<void>
+      _pickAndPrepareFolder() async {
+    if (_isBusy) {
+      return;
+    }
+
+    final folderPath =
+        await FilePicker.platform
+            .getDirectoryPath(
+      dialogTitle:
+          'Select Model Folder',
+    );
+
+    if (folderPath == null ||
+        folderPath.trim().isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _isPackaging =
+          true;
+
+      _packageProgress =
+          0;
+
+      _packageStage =
+          'Preparing...';
+
+      _preparedPackage =
+          null;
+
+      _error =
+          null;
+
+      _status =
+          null;
+    });
+
+    try {
+      final package =
+          await _packager.prepareFolder(
+        folderPath:
+            folderPath,
+        onProgress:
+            (
+          progress,
+          stage,
+        ) {
+          if (!mounted) {
+            return;
+          }
+
+          setState(() {
+            _packageProgress =
+                progress;
+
+            _packageStage =
+                stage;
+          });
+        },
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _preparedPackage =
+            package;
+
+        _packageProgress =
+            1;
+
+        _packageStage =
+            'Package ready.';
+
+        _isPackaging =
+            false;
+
+        _status =
+            package.isSplit
+                ? 'Package prepared successfully '
+                    'in ${package.partCount} parts.'
+                : 'Package prepared successfully '
+                    'as a single ZIP.';
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isPackaging =
+            false;
+
+        _packageProgress =
+            0;
+
+        _packageStage =
+            '';
+
+        _error =
+            e.toString();
+      });
+    }
+  }
+
+  Future<void> _openPreparedPackage() async {
+    final package =
+        _preparedPackage;
+
+    if (package == null) {
+      return;
+    }
+
+    try {
+      await _packager.openPackageFolder(
+        package,
+      );
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _error =
+            e.toString();
+      });
+    }
+  }
+
+  Future<void> _deletePreparedPackage() async {
+    final package =
+        _preparedPackage;
+
+    if (package == null ||
+        _isBusy) {
+      return;
+    }
+
+    final confirmed =
+        await showDialog<bool>(
+      context:
+          context,
+      builder:
+          (
+        context,
+      ) {
+        return AlertDialog(
+          title:
+              const Text(
+            'Delete Prepared Package?',
+          ),
+          content:
+              const Text(
+            'The temporary ZIP, parts and manifest '
+            'will be deleted. The original model '
+            'folder will not be changed.',
+          ),
+          actions: [
+            TextButton(
+              onPressed:
+                  () {
+                Navigator.of(
+                  context,
+                ).pop(
+                  false,
+                );
+              },
+              child:
+                  const Text(
+                'Cancel',
+              ),
+            ),
+            FilledButton(
+              onPressed:
+                  () {
+                Navigator.of(
+                  context,
+                ).pop(
+                  true,
+                );
+              },
+              child:
+                  const Text(
+                'Delete',
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    try {
+      await _packager.deletePackage(
+        package,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _preparedPackage =
+            null;
+
+        _status =
+            'Prepared package deleted.';
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _error =
+            e.toString();
+      });
+    }
+  }
+
+  // ============================================================
+  // FORGET CHANNEL
   // ============================================================
 
   Future<void> _forgetStorage() async {
@@ -504,16 +732,17 @@ class _TelegramStoragePageState
           ),
           content:
               const Text(
-            'This only removes the local Fabularium '
-            'configuration. The Telegram channel '
-            'and its files will not be deleted.',
+            'This removes only the local '
+            'configuration. Nothing will be '
+            'deleted from Telegram.',
           ),
           actions: [
             TextButton(
               onPressed:
                   () {
-                Navigator.of(context)
-                    .pop(
+                Navigator.of(
+                  context,
+                ).pop(
                   false,
                 );
               },
@@ -525,8 +754,9 @@ class _TelegramStoragePageState
             FilledButton(
               onPressed:
                   () {
-                Navigator.of(context)
-                    .pop(
+                Navigator.of(
+                  context,
+                ).pop(
                   true,
                 );
               },
@@ -600,7 +830,23 @@ class _TelegramStoragePageState
         24,
       ),
       children: [
-        _buildHeader(),
+        Text(
+          'Fabularium Cloud Storage',
+          style:
+              Theme.of(context)
+                  .textTheme
+                  .headlineSmall,
+        ),
+
+        const SizedBox(
+          height:
+              8,
+        ),
+
+        const Text(
+          'Package model folders and store them '
+          'inside your private Telegram channel.',
+        ),
 
         const SizedBox(
           height:
@@ -608,16 +854,34 @@ class _TelegramStoragePageState
         ),
 
         if (_channel == null)
-          _buildCreateStorageCard()
+          _buildUnconfiguredCard()
         else
-          _buildStorageCard(
+          _buildConfiguredCard(
             _channel!,
           ),
+
+        if (_isPackaging) ...[
+          const SizedBox(
+            height:
+                20,
+          ),
+          _buildPackagingProgress(),
+        ],
+
+        if (_preparedPackage != null) ...[
+          const SizedBox(
+            height:
+                20,
+          ),
+          _buildPreparedPackageCard(
+            _preparedPackage!,
+          ),
+        ],
 
         if (_isUploading) ...[
           const SizedBox(
             height:
-                24,
+                20,
           ),
           _buildUploadProgress(),
         ],
@@ -643,46 +907,12 @@ class _TelegramStoragePageState
               24,
         ),
 
-        _buildCurrentPhaseCard(),
+        _buildPhaseCard(),
       ],
     );
   }
 
-  Widget _buildHeader() {
-    return Column(
-      crossAxisAlignment:
-          CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Fabularium Cloud Storage',
-          style:
-              Theme.of(context)
-                  .textTheme
-                  .headlineSmall,
-        ),
-
-        const SizedBox(
-          height:
-              8,
-        ),
-
-        Text(
-          'Use a private Telegram channel as '
-          'secondary storage for your model files.',
-          style:
-              Theme.of(context)
-                  .textTheme
-                  .bodyLarge,
-        ),
-      ],
-    );
-  }
-
-  // ============================================================
-  // NOT CONFIGURED
-  // ============================================================
-
-  Widget _buildCreateStorageCard() {
+  Widget _buildUnconfiguredCard() {
     return Card(
       child:
           Padding(
@@ -695,48 +925,20 @@ class _TelegramStoragePageState
           crossAxisAlignment:
               CrossAxisAlignment.start,
           children: [
-            const Row(
-              children: [
-                Icon(
-                  Icons.cloud_outlined,
-                  size:
-                      32,
-                ),
-                SizedBox(
-                  width:
-                      12,
-                ),
-                Expanded(
-                  child:
-                      Text(
-                    'Storage is not configured',
-                    style:
-                        TextStyle(
-                      fontSize:
-                          18,
-                      fontWeight:
-                          FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ],
+            const Text(
+              'Storage is not configured',
+              style:
+                  TextStyle(
+                fontSize:
+                    18,
+                fontWeight:
+                    FontWeight.bold,
+              ),
             ),
-
             const SizedBox(
               height:
                   16,
             ),
-
-            const Text(
-              'Create a dedicated private channel '
-              'or use one you already created.',
-            ),
-
-            const SizedBox(
-              height:
-                  20,
-            ),
-
             Wrap(
               spacing:
                   12,
@@ -749,55 +951,26 @@ class _TelegramStoragePageState
                           ? null
                           : _createChannel,
                   icon:
-                      _isCreatingChannel
-                          ? const SizedBox(
-                              width:
-                                  18,
-                              height:
-                                  18,
-                              child:
-                                  CircularProgressIndicator(
-                                strokeWidth:
-                                    2,
-                              ),
-                            )
-                          : const Icon(
-                              Icons.add,
-                            ),
+                      const Icon(
+                    Icons.add,
+                  ),
                   label:
-                      Text(
-                    _isCreatingChannel
-                        ? 'Creating...'
-                        : 'Create New Storage Channel',
+                      const Text(
+                    'Create New Storage Channel',
                   ),
                 ),
-
                 OutlinedButton.icon(
                   onPressed:
                       _isBusy
                           ? null
                           : _selectExistingChannel,
                   icon:
-                      _isLoadingChannels
-                          ? const SizedBox(
-                              width:
-                                  18,
-                              height:
-                                  18,
-                              child:
-                                  CircularProgressIndicator(
-                                strokeWidth:
-                                    2,
-                              ),
-                            )
-                          : const Icon(
-                              Icons.cloud_queue,
-                            ),
+                      const Icon(
+                    Icons.cloud_queue,
+                  ),
                   label:
-                      Text(
-                    _isLoadingChannels
-                        ? 'Loading Channels...'
-                        : 'Use Existing Telegram Channel',
+                      const Text(
+                    'Use Existing Telegram Channel',
                   ),
                 ),
               ],
@@ -808,11 +981,7 @@ class _TelegramStoragePageState
     );
   }
 
-  // ============================================================
-  // CONFIGURED
-  // ============================================================
-
-  Widget _buildStorageCard(
+  Widget _buildConfiguredCard(
     TelegramStorageChannel channel,
   ) {
     return Card(
@@ -834,12 +1003,10 @@ class _TelegramStoragePageState
                   size:
                       32,
                 ),
-
                 const SizedBox(
                   width:
                       12,
                 ),
-
                 Expanded(
                   child:
                       Column(
@@ -858,38 +1025,17 @@ class _TelegramStoragePageState
                       ),
                       Text(
                         'Channel ID: ${channel.id}',
-                        style:
-                            Theme.of(context)
-                                .textTheme
-                                .bodySmall,
                       ),
                     ],
                   ),
                 ),
-
                 const Chip(
-                  avatar:
-                      Icon(
-                    Icons.check,
-                    size:
-                        16,
-                  ),
                   label:
                       Text(
                     'Configured',
                   ),
                 ),
               ],
-            ),
-
-            const SizedBox(
-              height:
-                  20,
-            ),
-
-            Text(
-              'Single-file limit in this phase: '
-              '${_formatSize(TelegramStorageService.maxStorageFileBytes)}',
             ),
 
             const SizedBox(
@@ -904,6 +1050,21 @@ class _TelegramStoragePageState
                   12,
               children: [
                 FilledButton.icon(
+                  onPressed:
+                      _isBusy
+                          ? null
+                          : _pickAndPrepareFolder,
+                  icon:
+                      const Icon(
+                    Icons.inventory_2_outlined,
+                  ),
+                  label:
+                      const Text(
+                    'Prepare Model Folder',
+                  ),
+                ),
+
+                OutlinedButton.icon(
                   onPressed:
                       _isBusy
                           ? null
@@ -924,21 +1085,9 @@ class _TelegramStoragePageState
                           ? null
                           : _selectExistingChannel,
                   icon:
-                      _isLoadingChannels
-                          ? const SizedBox(
-                              width:
-                                  18,
-                              height:
-                                  18,
-                              child:
-                                  CircularProgressIndicator(
-                                strokeWidth:
-                                    2,
-                              ),
-                            )
-                          : const Icon(
-                              Icons.swap_horiz,
-                            ),
+                      const Icon(
+                    Icons.swap_horiz,
+                  ),
                   label:
                       const Text(
                     'Change Channel',
@@ -967,19 +1116,264 @@ class _TelegramStoragePageState
     );
   }
 
-  // ============================================================
-  // UPLOAD PROGRESS
-  // ============================================================
+  Widget _buildPackagingProgress() {
+    return Card(
+      child:
+          Padding(
+        padding:
+            const EdgeInsets.all(
+          20,
+        ),
+        child:
+            Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
+            Text(
+              _packageStage,
+              style:
+                  const TextStyle(
+                fontWeight:
+                    FontWeight.bold,
+              ),
+            ),
+            const SizedBox(
+              height:
+                  14,
+            ),
+            LinearProgressIndicator(
+              value:
+                  _packageProgress,
+            ),
+            const SizedBox(
+              height:
+                  8,
+            ),
+            Text(
+              '${(_packageProgress * 100).toStringAsFixed(0)}%',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPreparedPackageCard(
+    TelegramStoragePackage package,
+  ) {
+    return Card(
+      child:
+          Padding(
+        padding:
+            const EdgeInsets.all(
+          20,
+        ),
+        child:
+            Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(
+                  Icons.inventory_2_outlined,
+                ),
+                SizedBox(
+                  width:
+                      10,
+                ),
+                Text(
+                  'Prepared Storage Package',
+                  style:
+                      TextStyle(
+                    fontSize:
+                        18,
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(
+              height:
+                  16,
+            ),
+
+            Text(
+              package.sourceFolderName,
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .titleMedium,
+            ),
+
+            const SizedBox(
+              height:
+                  8,
+            ),
+
+            Text(
+              'Original folder: '
+              '${_formatSize(package.sourceSize)}',
+            ),
+
+            Text(
+              'ZIP size: '
+              '${_formatSize(package.archiveSize)}',
+            ),
+
+            Text(
+              'Storage parts: '
+              '${package.partCount}',
+            ),
+
+            Text(
+              package.isSplit
+                  ? 'Archive was split because it exceeded 1900 MB.'
+                  : 'Archive fits in a single Telegram file.',
+            ),
+
+            const SizedBox(
+              height:
+                  16,
+            ),
+
+            const Divider(),
+
+            const SizedBox(
+              height:
+                  8,
+            ),
+
+            ...package.parts.map(
+              (
+                part,
+              ) {
+                final shortHash =
+                    part.sha256.length >=
+                            16
+                        ? part.sha256.substring(
+                            0,
+                            16,
+                          )
+                        : part.sha256;
+
+                return Padding(
+                  padding:
+                      const EdgeInsets.symmetric(
+                    vertical:
+                        6,
+                  ),
+                  child:
+                      Row(
+                    children: [
+                      CircleAvatar(
+                        radius:
+                            14,
+                        child:
+                            Text(
+                          '${part.index}',
+                          style:
+                              const TextStyle(
+                            fontSize:
+                                11,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(
+                        width:
+                            10,
+                      ),
+                      Expanded(
+                        child:
+                            Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              part.fileName,
+                              overflow:
+                                  TextOverflow.ellipsis,
+                            ),
+                            Text(
+                              '${_formatSize(part.size)} '
+                              '• SHA-256 $shortHash…',
+                              style:
+                                  Theme.of(context)
+                                      .textTheme
+                                      .bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+
+            const SizedBox(
+              height:
+                  12,
+            ),
+
+            Text(
+              'Manifest: '
+              '${package.manifestPath.split(RegExp(r'[\\/]+')).last}',
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .bodySmall,
+            ),
+
+            const SizedBox(
+              height:
+                  18,
+            ),
+
+            Wrap(
+              spacing:
+                  12,
+              runSpacing:
+                  12,
+              children: [
+                FilledButton.icon(
+                  onPressed:
+                      _openPreparedPackage,
+                  icon:
+                      const Icon(
+                    Icons.folder_open,
+                  ),
+                  label:
+                      const Text(
+                    'Open Package Folder',
+                  ),
+                ),
+
+                OutlinedButton.icon(
+                  onPressed:
+                      _isBusy
+                          ? null
+                          : _deletePreparedPackage,
+                  icon:
+                      const Icon(
+                    Icons.delete_outline,
+                  ),
+                  label:
+                      const Text(
+                    'Delete Temporary Package',
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildUploadProgress() {
-    final percent =
-        (_uploadProgress *
-                100)
-            .clamp(
-              0,
-              100,
-            );
-
     return Card(
       child:
           Padding(
@@ -995,34 +1389,21 @@ class _TelegramStoragePageState
             Text(
               _currentFileName ??
                   'Uploading...',
-              maxLines:
-                  2,
-              overflow:
-                  TextOverflow.ellipsis,
-              style:
-                  const TextStyle(
-                fontWeight:
-                    FontWeight.bold,
-              ),
             ),
-
             const SizedBox(
               height:
-                  14,
+                  12,
             ),
-
             LinearProgressIndicator(
               value:
                   _uploadProgress,
             ),
-
             const SizedBox(
               height:
                   8,
             ),
-
             Text(
-              '${percent.toStringAsFixed(0)}%',
+              '${(_uploadProgress * 100).toStringAsFixed(0)}%',
             ),
           ],
         ),
@@ -1088,13 +1469,6 @@ class _TelegramStoragePageState
               child:
                   Text(
                 _error!,
-                style:
-                    TextStyle(
-                  color:
-                      Theme.of(context)
-                          .colorScheme
-                          .error,
-                ),
               ),
             ),
           ],
@@ -1103,45 +1477,27 @@ class _TelegramStoragePageState
     );
   }
 
-  Widget _buildCurrentPhaseCard() {
-    return Card(
+  Widget _buildPhaseCard() {
+    return const Card(
       child:
           Padding(
         padding:
-            const EdgeInsets.all(
+            EdgeInsets.all(
           20,
         ),
         child:
-            Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
             Text(
-              'Storage Phase 1',
-              style:
-                  Theme.of(context)
-                      .textTheme
-                      .titleMedium,
-            ),
-
-            const SizedBox(
-              height:
-                  12,
-            ),
-
-            const Text(
-              '✓ Create private storage channel\n'
-              '✓ Use existing private channel\n'
-              '✓ Local channel configuration\n'
-              '✓ Real MTProto file upload\n'
-              '✓ Upload outside the UI isolate\n'
-              '✓ Telegram message ID captured\n'
-              '○ ZIP model folders\n'
-              '○ Split archives above 1900 MB\n'
-              '○ Manifest JSON\n'
-              '○ Restore model from Storage',
-            ),
-          ],
+          'Storage Phase 2\n\n'
+          '✓ Select existing private channel\n'
+          '✓ Real MTProto upload\n'
+          '✓ Select model folder\n'
+          '✓ ZIP model folder\n'
+          '✓ SHA-256 integrity checks\n'
+          '✓ Split archives above 1900 MB\n'
+          '✓ Manifest JSON\n'
+          '○ Upload complete package\n'
+          '○ Manifest with Telegram message IDs\n'
+          '○ Restore package from Telegram',
         ),
       ),
     );
