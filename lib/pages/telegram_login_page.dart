@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../services/telegram_service.dart';
+import '../services/telegram_session_lifecycle.dart';
 import 'telegram_group_pages.dart';
 
 class TelegramLoginPage extends StatefulWidget {
@@ -19,6 +20,9 @@ class _TelegramLoginPageState
     extends State<TelegramLoginPage> {
   final TelegramService _telegram =
       TelegramService.instance;
+
+  final TelegramSessionLifecycle _lifecycle =
+      TelegramSessionLifecycle.instance;
 
   final TextEditingController _controller =
       TextEditingController();
@@ -57,10 +61,6 @@ class _TelegramLoginPageState
       return;
     }
 
-    /*
-     * Se já está autenticado,
-     * não precisamos fazer nada.
-     */
     if (_telegram.isAuthenticated) {
       setState(() {
         _state =
@@ -70,10 +70,6 @@ class _TelegramLoginPageState
       return;
     }
 
-    /*
-     * Se existe uma sessão salva,
-     * conecta automaticamente.
-     */
     if (_telegram.hasSavedSession) {
       setState(() {
         _isProcessing = true;
@@ -316,12 +312,28 @@ class _TelegramLoginPageState
   }
 
   Future<void> _logout() async {
+    if (_isProcessing) {
+      return;
+    }
+
     setState(() {
       _isProcessing = true;
     });
 
     try {
+      /*
+       * Primeiro derrubamos todos os workers e
+       * limpamos caches/fila pertencentes à sessão.
+       *
+       * Só depois apagamos telegram_auth.json.
+       */
+      await _lifecycle.resetForLogout();
+
       await _telegram.logout();
+    } catch (e) {
+      _showMessage(
+        e.toString(),
+      );
     } finally {
       if (mounted) {
         setState(() {

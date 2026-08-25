@@ -55,21 +55,37 @@ class TelegramDownloadWorker {
     );
   }
 
-  /*
-   * Chamado pelo PerformanceCoordinator.
-   *
-   * Não inicia o worker.
-   *
-   * Se ainda não existir socket/worker,
-   * apenas guarda o estado para aplicar
-   * posteriormente.
-   */
   void setInteractiveMode(
     bool interactive,
   ) {
     _downloadWorker
         .setInteractiveMode(
       interactive,
+    );
+  }
+
+  /*
+   * Encerra download + preview da sessão atual,
+   * mas NÃO descarta permanentemente os workers.
+   *
+   * Depois de um novo login, eles podem iniciar
+   * novamente normalmente.
+   */
+  Future<void> resetSession() async {
+    const reason =
+        TelegramDownloadWorkerException(
+      'Telegram session reset.',
+    );
+
+    await Future.wait(
+      [
+        _downloadWorker.reset(
+          reason,
+        ),
+        _previewWorker.reset(
+          reason,
+        ),
+      ],
     );
   }
 
@@ -113,6 +129,7 @@ class _PersistentTelegramWorker {
       _exitSubscription;
 
   Future<void>? _startFuture;
+  Future<void>? _resetFuture;
 
   Completer<void>? _readyCompleter;
 
@@ -216,10 +233,24 @@ class _PersistentTelegramWorker {
     return completer.future;
   }
 
-  Future<void> _ensureStarted() {
+  Future<void> _ensureStarted() async {
+    if (_disposed) {
+      throw StateError(
+        'Telegram worker has been disposed.',
+      );
+    }
+
+    final resetting =
+        _resetFuture;
+
+    if (resetting !=
+        null) {
+      await resetting;
+    }
+
     if (_commandPort !=
         null) {
-      return Future<void>.value();
+      return;
     }
 
     final existing =
@@ -227,7 +258,8 @@ class _PersistentTelegramWorker {
 
     if (existing !=
         null) {
-      return existing;
+      await existing;
+      return;
     }
 
     final future =
@@ -236,7 +268,17 @@ class _PersistentTelegramWorker {
     _startFuture =
         future;
 
-    return future;
+    try {
+      await future;
+    } finally {
+      if (identical(
+        _startFuture,
+        future,
+      )) {
+        _startFuture =
+            null;
+      }
+    }
   }
 
   Future<void> _start() async {
@@ -274,6 +316,12 @@ class _PersistentTelegramWorker {
       (
         dynamic error,
       ) {
+        if (_disposed ||
+            _resetFuture !=
+                null) {
+          return;
+        }
+
         String message =
             error.toString();
 
@@ -304,6 +352,12 @@ class _PersistentTelegramWorker {
     _exitSubscription =
         exitPort.listen(
       (_) {
+        if (_disposed ||
+            _resetFuture !=
+                null) {
+          return;
+        }
+
         _commandPort =
             null;
 
@@ -313,22 +367,20 @@ class _PersistentTelegramWorker {
         _startFuture =
             null;
 
-        if (!_disposed) {
-          const exception =
-              TelegramDownloadWorkerException(
-            'Telegram worker stopped unexpectedly.',
-          );
+        const exception =
+            TelegramDownloadWorkerException(
+          'Telegram worker stopped unexpectedly.',
+        );
 
-          _failAll(
+        _failAll(
+          exception,
+        );
+
+        if (!readyCompleter
+            .isCompleted) {
+          readyCompleter.completeError(
             exception,
           );
-
-          if (!readyCompleter
-              .isCompleted) {
-            readyCompleter.completeError(
-              exception,
-            );
-          }
         }
       },
     );
@@ -360,9 +412,6 @@ class _PersistentTelegramWorker {
 
       await readyCompleter.future;
     } catch (_) {
-      _startFuture =
-          null;
-
       rethrow;
     }
   }
@@ -392,11 +441,6 @@ class _PersistentTelegramWorker {
         _commandPort =
             commandPort;
 
-        /*
-         * Aplica imediatamente o estado
-         * atual, caso o usuário já estivesse
-         * navegando quando o worker iniciou.
-         */
         if (mode ==
             _TelegramWorkerMode
                 .download) {
@@ -426,6 +470,11 @@ class _PersistentTelegramWorker {
 
     if (type ==
         'fatal') {
+      if (_resetFuture !=
+          null) {
+        return;
+      }
+
       final error =
           TelegramDownloadWorkerException(
         message['error']
@@ -564,32 +613,81 @@ class _PersistentTelegramWorker {
     }
   }
 
-  Future<void> dispose() async {
-    if (_disposed) {
-      return;
+  Future<void> reset(
+    Object reason,
+  ) {
+    final existing =
+        _resetFuture;
+
+    if (existing !=
+        null) {
+      return existing;
     }
 
-    _disposed =
-        true;
+    late final Future<void>
+        future;
 
-    _commandPort?.send(
-      <String, dynamic>{
-        'type':
-            'shutdown',
+    future =
+        _performReset(
+      reason,
+    ).whenComplete(
+      () {
+        if (identical(
+          _resetFuture,
+          future,
+        )) {
+          _resetFuture =
+              null;
+        }
       },
     );
 
-    await Future<void>.delayed(
-      const Duration(
-        milliseconds:
-            100,
-      ),
+    _resetFuture =
+        future;
+
+    return future;
+  }
+
+  Future<void> _performReset(
+    Object reason,
+  ) async {
+    final ready =
+        _readyCompleter;
+
+    if (ready != null &&
+        !ready.isCompleted) {
+      ready.completeError(
+        reason,
+      );
+    }
+
+    _readyCompleter =
+        null;
+
+    _failAll(
+      reason,
     );
 
-    _isolate?.kill(
-      priority:
-          Isolate.immediate,
-    );
+    final isolate =
+        _isolate;
+
+    final eventSubscription =
+        _eventSubscription;
+
+    final errorSubscription =
+        _errorSubscription;
+
+    final exitSubscription =
+        _exitSubscription;
+
+    final eventPort =
+        _eventPort;
+
+    final errorPort =
+        _errorPort;
+
+    final exitPort =
+        _exitPort;
 
     _isolate =
         null;
@@ -597,24 +695,14 @@ class _PersistentTelegramWorker {
     _commandPort =
         null;
 
-    _failAll(
-      const TelegramDownloadWorkerException(
-        'Telegram worker disposed.',
-      ),
-    );
+    _eventSubscription =
+        null;
 
-    await _eventSubscription
-        ?.cancel();
+    _errorSubscription =
+        null;
 
-    await _errorSubscription
-        ?.cancel();
-
-    await _exitSubscription
-        ?.cancel();
-
-    _eventPort?.close();
-    _errorPort?.close();
-    _exitPort?.close();
+    _exitSubscription =
+        null;
 
     _eventPort =
         null;
@@ -624,6 +712,42 @@ class _PersistentTelegramWorker {
 
     _exitPort =
         null;
+
+    _startFuture =
+        null;
+
+    isolate?.kill(
+      priority:
+          Isolate.immediate,
+    );
+
+    await eventSubscription
+        ?.cancel();
+
+    await errorSubscription
+        ?.cancel();
+
+    await exitSubscription
+        ?.cancel();
+
+    eventPort?.close();
+    errorPort?.close();
+    exitPort?.close();
+  }
+
+  Future<void> dispose() async {
+    if (_disposed) {
+      return;
+    }
+
+    _disposed =
+        true;
+
+    await _performReset(
+      const TelegramDownloadWorkerException(
+        'Telegram worker disposed.',
+      ),
+    );
   }
 }
 
@@ -731,10 +855,6 @@ Future<void> _telegramPersistentWorkerEntryPoint(
       final type =
           command['type'];
 
-      /*
-       * Esse comando pode ser recebido mesmo
-       * enquanto o download está acontecendo.
-       */
       if (type ==
           'interactive') {
         runtimePolicy.interactive =
@@ -746,10 +866,6 @@ Future<void> _telegramPersistentWorkerEntryPoint(
 
       if (type ==
           'shutdown') {
-        /*
-         * Em encerramento normal deixamos
-         * a operação corrente finalizar.
-         */
         final current =
             activeDownload;
 
@@ -779,12 +895,6 @@ Future<void> _telegramPersistentWorkerEntryPoint(
                   .download.name &&
           type ==
               'download') {
-        /*
-         * A fila global já garante um arquivo
-         * grande por vez.
-         *
-         * Mesmo assim protegemos o worker.
-         */
         if (activeDownload !=
             null) {
           eventPort.send(
@@ -829,14 +939,6 @@ Future<void> _telegramPersistentWorkerEntryPoint(
           ),
         );
 
-        /*
-         * IMPORTANTE:
-         *
-         * NÃO await aqui.
-         *
-         * O loop continua livre para receber
-         * interactive=true/false.
-         */
         continue;
       }
 
@@ -845,9 +947,6 @@ Future<void> _telegramPersistentWorkerEntryPoint(
                   .preview.name &&
           type ==
               'preview') {
-        /*
-         * Preview continua sequencial.
-         */
         await _executePreviewCommand(
           eventPort:
               eventPort,
