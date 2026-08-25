@@ -31,8 +31,7 @@ class TelegramService {
 
   t.AuthSentCode? _authSentCode;
 
-  t.AccountPassword?
-      _accountPassword;
+  t.AccountPassword? _accountPassword;
 
   String? _phoneNumber;
 
@@ -467,17 +466,12 @@ class TelegramService {
 
   // ============================================================
   // MESSAGES
-  //
-  // Este método continua aqui porque
-  // TelegramMessagesWorker cria sua própria
-  // instância de TelegramService dentro do
-  // isolate e utiliza este parser.
   // ============================================================
 
-  Future<List<TelegramMessage>>
-      getMessages(
+  Future<List<TelegramMessage>> getMessages(
     TelegramGroup group, {
     int limit = 50,
+    int offsetId = 0,
   }) async {
     final client =
         _telegramClient.client;
@@ -493,13 +487,23 @@ class TelegramService {
       group,
     );
 
+    /*
+     * offsetId == 0
+     *
+     *   retorna as mensagens mais recentes.
+     *
+     * offsetId > 0
+     *
+     *   continua o histórico a partir daquele
+     *   message ID, permitindo paginação real.
+     */
     final response =
         await client.messages
             .getHistory(
       peer:
           peer,
       offsetId:
-          0,
+          offsetId,
       offsetDate:
           DateTime.fromMillisecondsSinceEpoch(
         0,
@@ -823,8 +827,7 @@ class TelegramService {
       final fullSize =
           sizes.last;
 
-      _TelegramRemotePhotoSize
-          previewSize =
+      _TelegramRemotePhotoSize previewSize =
           fullSize;
 
       for (final size

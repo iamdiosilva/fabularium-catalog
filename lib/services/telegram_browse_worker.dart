@@ -25,8 +25,17 @@ class TelegramBrowseWorker {
     seconds: 20,
   );
 
-  static const int _maxCachedMessageGroups =
-      15;
+  /*
+   * Agora o cache representa páginas e não apenas
+   * grupos, pois um mesmo grupo poderá possuir:
+   *
+   * offset 0
+   * offset 12345
+   * offset 12000
+   * ...
+   */
+  static const int _maxCachedMessagePages =
+      30;
 
   List<TelegramGroup>? _groupsCache;
 
@@ -77,14 +86,17 @@ class TelegramBrowseWorker {
       _pendingMessages =
       <int, _PendingMessagesRequest>{};
 
-  int _nextRequestId = 0;
+  int _nextRequestId =
+      0;
 
-  bool _disposed = false;
+  bool _disposed =
+      false;
 
   TelegramSessionInvalidHandler?
       _sessionInvalidHandler;
 
-  bool _sessionInvalidNotified = false;
+  bool _sessionInvalidNotified =
+      false;
 
   // ============================================================
   // SESSION INVALID HANDLER
@@ -129,17 +141,12 @@ class TelegramBrowseWorker {
       errorMessage,
     );
 
-    /*
-     * Derruba imediatamente este worker.
-     *
-     * Também limpamos os caches porque eles
-     * pertencem à sessão que acabou de se
-     * tornar inválida.
-     */
     unawaited(
       reset(
-        reason: exception,
-        clearCache: true,
+        reason:
+            exception,
+        clearCache:
+            true,
       ),
     );
 
@@ -150,14 +157,6 @@ class TelegramBrowseWorker {
       return;
     }
 
-    /*
-     * Executamos o callback fora da pilha
-     * atual do ReceivePort.
-     *
-     * Isso evita reentrância enquanto ainda
-     * estamos terminando de processar a
-     * resposta que detectou a sessão inválida.
-     */
     unawaited(
       Future<void>(
         () async {
@@ -202,7 +201,8 @@ class TelegramBrowseWorker {
     late final Future<List<TelegramGroup>>
         future;
 
-    future = _executeGroups().then(
+    future =
+        _executeGroups().then(
       (
         groups,
       ) {
@@ -245,12 +245,14 @@ class TelegramBrowseWorker {
   Future<List<TelegramMessage>> getMessages(
     TelegramGroup group, {
     int limit = 50,
+    int offsetId = 0,
     bool forceRefresh = false,
   }) {
     final key =
         _messagesCacheKey(
       group,
       limit,
+      offsetId,
     );
 
     if (!forceRefresh) {
@@ -261,8 +263,8 @@ class TelegramBrowseWorker {
 
       if (cached != null) {
         /*
-         * Remove + insere novamente para marcar
-         * este grupo como o mais recentemente usado.
+         * Remove + adiciona novamente para
+         * implementar LRU.
          */
         _messagesCache[key] =
             cached;
@@ -276,6 +278,14 @@ class TelegramBrowseWorker {
       }
     }
 
+    /*
+     * Apenas requisições para exatamente a mesma
+     * página compartilham o mesmo Future.
+     *
+     * Ex.:
+     *
+     * offset 1000 != offset 500
+     */
     final existing =
         _messagesInFlight[key];
 
@@ -286,9 +296,14 @@ class TelegramBrowseWorker {
     late final Future<List<TelegramMessage>>
         future;
 
-    future = _executeMessages(
-      group: group,
-      limit: limit,
+    future =
+        _executeMessages(
+      group:
+          group,
+      limit:
+          limit,
+      offsetId:
+          offsetId,
     ).then(
       (
         messages,
@@ -370,7 +385,7 @@ class TelegramBrowseWorker {
     );
 
     while (_messagesCache.length >
-        _maxCachedMessageGroups) {
+        _maxCachedMessagePages) {
       final oldestKey =
           _messagesCache.keys.first;
 
@@ -457,6 +472,7 @@ class TelegramBrowseWorker {
       _executeMessages({
     required TelegramGroup group,
     required int limit,
+    required int offsetId,
   }) async {
     await _ensureStarted();
 
@@ -501,10 +517,10 @@ class TelegramBrowseWorker {
 
         /*
          * Se uma chamada travar,
-         * descartamos o isolate/socket.
+         * descartamos isolate + socket.
          *
          * A próxima chamada cria uma
-         * conexão limpa automaticamente.
+         * conexão nova automaticamente.
          */
         _scheduleReset(
           error,
@@ -530,6 +546,8 @@ class TelegramBrowseWorker {
             group,
         'limit':
             limit,
+        'offsetId':
+            offsetId,
       },
     );
 
@@ -724,12 +742,6 @@ class TelegramBrowseWorker {
         _commandPort =
             port;
 
-        /*
-         * Uma nova conexão foi estabelecida.
-         *
-         * Permitimos que uma futura sessão
-         * inválida seja reportada novamente.
-         */
         _sessionInvalidNotified =
             false;
 
@@ -826,20 +838,14 @@ class TelegramBrowseWorker {
           errorMessage,
         );
 
-        /*
-         * Primeiro finalizamos o Future
-         * da tela que fez esta chamada.
-         */
-        if (!pending.completer.isCompleted) {
+        if (!pending
+            .completer
+            .isCompleted) {
           pending.completer.completeError(
             exception,
           );
         }
 
-        /*
-         * Depois propagamos a invalidação
-         * para o main isolate.
-         */
         _notifySessionInvalid(
           errorMessage,
         );
@@ -847,7 +853,9 @@ class TelegramBrowseWorker {
         return;
       }
 
-      if (!pending.completer.isCompleted) {
+      if (!pending
+          .completer
+          .isCompleted) {
         pending.completer.completeError(
           Exception(
             errorMessage,
@@ -862,7 +870,9 @@ class TelegramBrowseWorker {
         message['groups'];
 
     if (rawGroups is! List) {
-      if (!pending.completer.isCompleted) {
+      if (!pending
+          .completer
+          .isCompleted) {
         pending.completer.completeError(
           Exception(
             'Resposta inválida ao carregar grupos.',
@@ -898,7 +908,9 @@ class TelegramBrowseWorker {
       } catch (_) {}
     }
 
-    if (!pending.completer.isCompleted) {
+    if (!pending
+        .completer
+        .isCompleted) {
       pending.completer.complete(
         groups,
       );
@@ -934,7 +946,9 @@ class TelegramBrowseWorker {
           errorMessage,
         );
 
-        if (!pending.completer.isCompleted) {
+        if (!pending
+            .completer
+            .isCompleted) {
           pending.completer.completeError(
             exception,
           );
@@ -947,7 +961,9 @@ class TelegramBrowseWorker {
         return;
       }
 
-      if (!pending.completer.isCompleted) {
+      if (!pending
+          .completer
+          .isCompleted) {
         pending.completer.completeError(
           Exception(
             errorMessage,
@@ -962,7 +978,9 @@ class TelegramBrowseWorker {
         message['messages'];
 
     if (rawMessages is! List) {
-      if (!pending.completer.isCompleted) {
+      if (!pending
+          .completer
+          .isCompleted) {
         pending.completer.completeError(
           Exception(
             'Resposta inválida ao carregar mensagens.',
@@ -985,7 +1003,9 @@ class TelegramBrowseWorker {
       }
     }
 
-    if (!pending.completer.isCompleted) {
+    if (!pending
+        .completer
+        .isCompleted) {
       pending.completer.complete(
         messages,
       );
@@ -1021,7 +1041,8 @@ class TelegramBrowseWorker {
     late final Future<void>
         future;
 
-    future = _performReset(
+    future =
+        _performReset(
       reason:
           reason ??
               const TelegramBrowseWorkerResetException(),
@@ -1144,7 +1165,9 @@ class TelegramBrowseWorker {
         in groups) {
       request.timeout.cancel();
 
-      if (!request.completer.isCompleted) {
+      if (!request
+          .completer
+          .isCompleted) {
         request.completer.completeError(
           error,
         );
@@ -1160,7 +1183,9 @@ class TelegramBrowseWorker {
         in messages) {
       request.timeout.cancel();
 
-      if (!request.completer.isCompleted) {
+      if (!request
+          .completer
+          .isCompleted) {
         request.completer.completeError(
           error,
         );
@@ -1182,8 +1207,11 @@ class TelegramBrowseWorker {
   String _messagesCacheKey(
     TelegramGroup group,
     int limit,
+    int offsetId,
   ) {
-    return '${_groupKey(group)}|limit:$limit';
+    return '${_groupKey(group)}'
+        '|limit:$limit'
+        '|offset:$offsetId';
   }
 
   // ============================================================
@@ -1210,7 +1238,8 @@ class TelegramBrowseWorker {
 
     await Future<void>.delayed(
       const Duration(
-        milliseconds: 150,
+        milliseconds:
+            150,
       ),
     );
 
@@ -1325,6 +1354,10 @@ Future<void> _telegramBrowseWorkerEntryPoint(
         continue;
       }
 
+      // ========================================================
+      // GROUPS
+      // ========================================================
+
       if (type == 'groups') {
         try {
           final groups =
@@ -1363,12 +1396,29 @@ Future<void> _telegramBrowseWorkerEntryPoint(
         continue;
       }
 
+      // ========================================================
+      // MESSAGES
+      // ========================================================
+
       if (type == 'messages') {
         final group =
             command['group'];
 
         final limit =
             command['limit'];
+
+        /*
+         * Mantemos fallback para 0 para que uma
+         * mensagem criada por uma versão anterior
+         * do main isolate não quebre o worker.
+         */
+        final rawOffsetId =
+            command['offsetId'];
+
+        final offsetId =
+            rawOffsetId is int
+                ? rawOffsetId
+                : 0;
 
         if (group is! TelegramGroup ||
             limit is! int) {
@@ -1394,6 +1444,8 @@ Future<void> _telegramBrowseWorkerEntryPoint(
             group,
             limit:
                 limit,
+            offsetId:
+                offsetId,
           );
 
           eventPort.send(
@@ -1448,8 +1500,11 @@ Future<void> _telegramBrowseWorkerEntryPoint(
   }
 }
 
-Future<List<Map<String, dynamic>>>
-    _loadGroups(
+// ============================================================
+// GROUP LOADING
+// ============================================================
+
+Future<List<Map<String, dynamic>>> _loadGroups(
   dynamic client,
 ) async {
   final response =
