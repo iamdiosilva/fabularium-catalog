@@ -3,151 +3,107 @@ import 'package:flutter/material.dart';
 
 import '../models/telegram_storage_channel.dart';
 import '../models/telegram_storage_package.dart';
-import '../services/telegram_storage_package_uploader.dart';
+import '../models/telegram_storage_upload_journal.dart';
+import '../models/telegram_storage_workspace.dart';
 import '../services/telegram_storage_packager.dart';
 import '../services/telegram_storage_service.dart';
+import '../services/telegram_storage_upload_journal_service.dart';
+import '../services/telegram_storage_workspace_service.dart';
 
-class TelegramStoragePage
-    extends StatefulWidget {
+class TelegramStoragePage extends StatefulWidget {
   const TelegramStoragePage({
     super.key,
   });
 
   @override
-  State<TelegramStoragePage>
-      createState() =>
-          _TelegramStoragePageState();
+  State<TelegramStoragePage> createState() =>
+      _TelegramStoragePageState();
+}
+
+enum _StorageChannelRole {
+  catalog,
+  files,
 }
 
 class _TelegramStoragePageState
     extends State<TelegramStoragePage> {
+  final TelegramStorageWorkspaceService _workspaceService =
+      TelegramStorageWorkspaceService.instance;
+
   final TelegramStorageService _storage =
       TelegramStorageService.instance;
 
   final TelegramStoragePackager _packager =
       TelegramStoragePackager.instance;
 
-  final TelegramStoragePackageUploader
-      _packageUploader =
-      TelegramStoragePackageUploader.instance;
+  final TelegramStorageUploadJournalService _journalService =
+      TelegramStorageUploadJournalService.instance;
 
-  TelegramStorageChannel? _channel;
+  TelegramStorageWorkspace _workspace =
+      const TelegramStorageWorkspace.empty();
 
   TelegramStoragePackage? _preparedPackage;
 
-  TelegramStoragePackageUploadResult?
-      _lastPackageUpload;
+  List<TelegramStorageUploadJournal> _incompleteUploads =
+      <TelegramStorageUploadJournal>[];
 
-  bool _isLoading =
-      true;
+  bool _isLoading = true;
 
-  bool _isCreatingChannel =
-      false;
+  bool _isLoadingChannels = false;
 
-  bool _isLoadingChannels =
-      false;
+  bool _isCreatingChannel = false;
 
-  bool _isUploading =
-      false;
+  bool _isPackaging = false;
 
-  bool _isPackaging =
-      false;
+  bool _isUploadingTestFile = false;
 
-  bool _isUploadingPackage =
-      false;
+  double _packageProgress = 0;
 
-  double _uploadProgress =
-      0;
+  double _testUploadProgress = 0;
 
-  double _packageProgress =
-      0;
+  String _packageStage = '';
 
-  double _packageUploadProgress =
-      0;
-
-  String _packageStage =
-      '';
-
-  String _packageUploadStage =
-      '';
-
-  String? _packageUploadFileName;
-
-  String? _error;
+  String? _testUploadFileName;
 
   String? _status;
 
-  String? _currentFileName;
+  String? _error;
 
   bool get _isBusy =>
-      _isCreatingChannel ||
       _isLoadingChannels ||
-      _isUploading ||
+      _isCreatingChannel ||
       _isPackaging ||
-      _isUploadingPackage;
+      _isUploadingTestFile;
 
   @override
   void initState() {
     super.initState();
 
-    _loadStorage();
-  }
-
-  Future<void> _loadStorage() async {
-    final channel =
-        await _storage.loadChannel();
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _channel =
-          channel;
-
-      _isLoading =
-          false;
-    });
+    _load();
   }
 
   // ============================================================
-  // CREATE CHANNEL
+  // LOAD
   // ============================================================
 
-  Future<void> _createChannel() async {
-    if (_isBusy) {
-      return;
-    }
-
-    setState(() {
-      _isCreatingChannel =
-          true;
-
-      _error =
-          null;
-
-      _status =
-          'Creating private Telegram storage channel...';
-    });
-
+  Future<void> _load() async {
     try {
-      final channel =
-          await _storage
-              .createStorageChannel();
+      final workspace =
+          await _workspaceService.load();
+
+      final incomplete =
+          await _journalService.listIncomplete();
 
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _channel =
-            channel;
+        _workspace = workspace;
 
-        _status =
-            'Storage channel created successfully.';
+        _incompleteUploads = incomplete;
 
-        _isCreatingChannel =
-            false;
+        _isLoading = false;
       });
     } catch (e) {
       if (!mounted) {
@@ -155,34 +111,41 @@ class _TelegramStoragePageState
       }
 
       setState(() {
-        _error =
-            e.toString();
+        _isLoading = false;
 
-        _status =
-            null;
-
-        _isCreatingChannel =
-            false;
+        _error = e.toString();
       });
     }
   }
 
+  Future<void> _reloadJournals() async {
+    final incomplete =
+        await _journalService.listIncomplete();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _incompleteUploads = incomplete;
+    });
+  }
+
   // ============================================================
-  // EXISTING CHANNEL
+  // SELECT EXISTING CHANNEL
   // ============================================================
 
-  Future<void>
-      _selectExistingChannel() async {
+  Future<void> _selectExistingChannel(
+    _StorageChannelRole role,
+  ) async {
     if (_isBusy) {
       return;
     }
 
     setState(() {
-      _isLoadingChannels =
-          true;
+      _isLoadingChannels = true;
 
-      _error =
-          null;
+      _error = null;
 
       _status =
           'Loading private Telegram channels...';
@@ -190,7 +153,7 @@ class _TelegramStoragePageState
 
     try {
       final channels =
-          await _storage
+          await _workspaceService
               .listAvailableChannels();
 
       if (!mounted) {
@@ -198,18 +161,43 @@ class _TelegramStoragePageState
       }
 
       setState(() {
-        _isLoadingChannels =
-            false;
+        _isLoadingChannels = false;
 
-        _status =
-            null;
+        _status = null;
       });
 
       if (channels.isEmpty) {
         setState(() {
           _error =
               'No writable private Telegram channels '
-              'were found in the recent dialog list.';
+              'were found.';
+        });
+
+        return;
+      }
+
+      final unavailableChannelId =
+          role == _StorageChannelRole.catalog
+              ? _workspace.filesChannel?.id
+              : _workspace.catalogChannel?.id;
+
+      final availableChannels =
+          channels
+              .where(
+                (
+                  channel,
+                ) =>
+                    channel.id !=
+                    unavailableChannelId,
+              )
+              .toList();
+
+      if (availableChannels.isEmpty) {
+        setState(() {
+          _error =
+              'No other private channel is available. '
+              'Catalog Channel and Files Channel must '
+              'be different.';
         });
 
         return;
@@ -218,85 +206,80 @@ class _TelegramStoragePageState
       final selected =
           await showDialog<
               TelegramStorageChannel>(
-        context:
-            context,
-        builder:
-            (
+        context: context,
+        builder: (
           context,
         ) {
           return AlertDialog(
-            title:
-                const Text(
-              'Select Storage Channel',
+            title: Text(
+              role ==
+                      _StorageChannelRole.catalog
+                  ? 'Select Catalog Channel'
+                  : 'Select Files Channel',
             ),
-            content:
-                SizedBox(
-              width:
-                  560,
-              height:
-                  420,
-              child:
-                  Column(
+            content: SizedBox(
+              width: 580,
+              height: 440,
+              child: Column(
                 crossAxisAlignment:
                     CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Choose a private channel where '
-                    'this Telegram account can publish files.',
-                    style:
-                        Theme.of(context)
-                            .textTheme
-                            .bodyMedium,
+                    role ==
+                            _StorageChannelRole.catalog
+                        ? 'Choose the private channel '
+                            'that will contain model images '
+                            'and catalog information.'
+                        : 'Choose the private channel '
+                            'that will contain ZIP files, '
+                            'package parts and manifests.',
                   ),
                   const SizedBox(
-                    height:
-                        16,
+                    height: 16,
                   ),
                   Expanded(
-                    child:
-                        ListView.separated(
+                    child: ListView.separated(
                       itemCount:
-                          channels.length,
-                      separatorBuilder:
-                          (
+                          availableChannels.length,
+                      separatorBuilder: (
                         context,
                         index,
                       ) =>
-                              const Divider(
-                        height:
-                            1,
+                          const Divider(
+                        height: 1,
                       ),
-                      itemBuilder:
-                          (
+                      itemBuilder: (
                         context,
                         index,
                       ) {
                         final channel =
-                            channels[
-                                index];
+                            availableChannels[index];
 
                         return ListTile(
                           leading:
-                              const CircleAvatar(
-                            child:
-                                Icon(
-                              Icons.lock_outline,
+                              CircleAvatar(
+                            child: Icon(
+                              role ==
+                                      _StorageChannelRole
+                                          .catalog
+                                  ? Icons
+                                      .photo_library_outlined
+                                  : Icons
+                                      .folder_zip_outlined,
                             ),
                           ),
-                          title:
-                              Text(
+                          title: Text(
                             channel.title,
                           ),
-                          subtitle:
-                              Text(
-                            'Private channel • ID ${channel.id}',
+                          subtitle: Text(
+                            'Private channel • '
+                            'ID ${channel.id}',
                           ),
                           trailing:
                               const Icon(
                             Icons.chevron_right,
                           ),
-                          onTap:
-                              () {
+                          onTap: () {
                             Navigator.of(
                               context,
                             ).pop(
@@ -312,8 +295,7 @@ class _TelegramStoragePageState
             ),
             actions: [
               TextButton(
-                onPressed:
-                    () {
+                onPressed: () {
                   Navigator.of(
                     context,
                   ).pop();
@@ -333,28 +315,39 @@ class _TelegramStoragePageState
         return;
       }
 
-      await _storage
-          .selectExistingChannel(
-        selected,
-      );
+      final TelegramStorageWorkspace updated;
+
+      if (role ==
+          _StorageChannelRole.catalog) {
+        updated =
+            await _workspaceService
+                .selectCatalogChannel(
+          selected,
+        );
+      } else {
+        updated =
+            await _workspaceService
+                .selectFilesChannel(
+          selected,
+        );
+      }
 
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _channel =
-            selected;
+        _workspace = updated;
 
-        _lastPackageUpload =
-            null;
-
-        _error =
-            null;
+        _error = null;
 
         _status =
-            'Using "${selected.title}" '
-            'as Fabularium Storage.';
+            role ==
+                    _StorageChannelRole.catalog
+                ? '"${selected.title}" is now '
+                    'the Catalog Channel.'
+                : '"${selected.title}" is now '
+                    'the Files Channel.';
       });
     } catch (e) {
       if (!mounted) {
@@ -362,25 +355,256 @@ class _TelegramStoragePageState
       }
 
       setState(() {
-        _isLoadingChannels =
-            false;
+        _isLoadingChannels = false;
 
-        _status =
-            null;
+        _status = null;
 
-        _error =
-            e.toString();
+        _error = e.toString();
       });
     }
   }
 
   // ============================================================
-  // TEST UPLOAD
+  // CREATE CHANNEL
   // ============================================================
 
-  Future<void> _pickAndUpload() async {
+  Future<void> _createChannel(
+    _StorageChannelRole role,
+  ) async {
+    if (_isBusy) {
+      return;
+    }
+
+    final channelName =
+        role == _StorageChannelRole.catalog
+            ? TelegramStorageWorkspaceService
+                .defaultCatalogChannelTitle
+            : TelegramStorageWorkspaceService
+                .defaultFilesChannelTitle;
+
+    final confirmed =
+        await showDialog<bool>(
+      context: context,
+      builder: (
+        context,
+      ) {
+        return AlertDialog(
+          title: const Text(
+            'Create Private Channel?',
+          ),
+          content: Text(
+            'Fabularium will create the private '
+            'Telegram channel:\n\n'
+            '$channelName',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(
+                  context,
+                ).pop(
+                  false,
+                );
+              },
+              child:
+                  const Text(
+                'Cancel',
+              ),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.of(
+                  context,
+                ).pop(
+                  true,
+                );
+              },
+              icon:
+                  const Icon(
+                Icons.add,
+              ),
+              label:
+                  const Text(
+                'Create',
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true ||
+        !mounted) {
+      return;
+    }
+
+    setState(() {
+      _isCreatingChannel = true;
+
+      _error = null;
+
+      _status =
+          'Creating $channelName...';
+    });
+
+    try {
+      final TelegramStorageWorkspace updated;
+
+      if (role ==
+          _StorageChannelRole.catalog) {
+        updated =
+            await _workspaceService
+                .createCatalogChannel();
+      } else {
+        updated =
+            await _workspaceService
+                .createFilesChannel();
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _workspace = updated;
+
+        _isCreatingChannel = false;
+
+        _status =
+            '$channelName created successfully.';
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isCreatingChannel = false;
+
+        _status = null;
+
+        _error = e.toString();
+      });
+    }
+  }
+
+  // ============================================================
+  // CLEAR CHANNEL
+  // ============================================================
+
+  Future<void> _clearChannel(
+    _StorageChannelRole role,
+  ) async {
+    if (_isBusy) {
+      return;
+    }
+
     final channel =
-        _channel;
+        role == _StorageChannelRole.catalog
+            ? _workspace.catalogChannel
+            : _workspace.filesChannel;
+
+    if (channel == null) {
+      return;
+    }
+
+    final confirmed =
+        await showDialog<bool>(
+      context: context,
+      builder: (
+        context,
+      ) {
+        return AlertDialog(
+          title: const Text(
+            'Remove Channel Configuration?',
+          ),
+          content: Text(
+            'Remove "${channel.title}" from '
+            'Fabularium configuration?\n\n'
+            'The Telegram channel itself will NOT '
+            'be deleted.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(
+                  context,
+                ).pop(
+                  false,
+                );
+              },
+              child:
+                  const Text(
+                'Cancel',
+              ),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(
+                  context,
+                ).pop(
+                  true,
+                );
+              },
+              child:
+                  const Text(
+                'Remove',
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true ||
+        !mounted) {
+      return;
+    }
+
+    try {
+      final TelegramStorageWorkspace updated;
+
+      if (role ==
+          _StorageChannelRole.catalog) {
+        updated =
+            await _workspaceService
+                .clearCatalogChannel();
+      } else {
+        updated =
+            await _workspaceService
+                .clearFilesChannel();
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _workspace = updated;
+
+        _error = null;
+
+        _status =
+            'Channel configuration removed.';
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _error = e.toString();
+      });
+    }
+  }
+
+  // ============================================================
+  // TEST FILE UPLOAD
+  // ============================================================
+
+  Future<void> _testFilesChannel() async {
+    final channel =
+        _workspace.filesChannel;
 
     if (channel == null ||
         _isBusy) {
@@ -388,10 +612,8 @@ class _TelegramStoragePageState
     }
 
     final selection =
-        await FilePicker.platform
-            .pickFiles(
-      allowMultiple:
-          false,
+        await FilePicker.platform.pickFiles(
+      allowMultiple: false,
     );
 
     if (selection == null ||
@@ -423,31 +645,26 @@ class _TelegramStoragePageState
     }
 
     setState(() {
-      _isUploading =
-          true;
+      _isUploadingTestFile = true;
 
-      _uploadProgress =
-          0;
+      _testUploadProgress = 0;
 
-      _currentFileName =
+      _testUploadFileName =
           selected.name;
 
-      _error =
-          null;
+      _error = null;
 
       _status =
-          'Uploading ${selected.name}...';
+          'Uploading test file to '
+          '${channel.title}...';
     });
 
     try {
       final result =
           await _storage.uploadFile(
-        channel:
-            channel,
-        filePath:
-            path,
-        onProgress:
-            (
+        channel: channel,
+        filePath: path,
+        onProgress: (
           progress,
         ) {
           if (!mounted) {
@@ -455,7 +672,7 @@ class _TelegramStoragePageState
           }
 
           setState(() {
-            _uploadProgress =
+            _testUploadProgress =
                 progress;
           });
         },
@@ -466,20 +683,18 @@ class _TelegramStoragePageState
       }
 
       setState(() {
-        _isUploading =
-            false;
+        _isUploadingTestFile = false;
 
-        _uploadProgress =
-            1;
+        _testUploadProgress = 1;
+
+        _testUploadFileName = null;
 
         _status =
             result.messageId != null
-                ? '${result.fileName} uploaded successfully. '
-                    'Telegram message ID: ${result.messageId}.'
-                : '${result.fileName} uploaded successfully.';
-
-        _currentFileName =
-            null;
+                ? 'Files Channel test successful. '
+                    'Message ID: '
+                    '${result.messageId}.'
+                : 'Files Channel test successful.';
       });
     } catch (e) {
       if (!mounted) {
@@ -487,27 +702,22 @@ class _TelegramStoragePageState
       }
 
       setState(() {
-        _isUploading =
-            false;
+        _isUploadingTestFile = false;
 
-        _error =
-            e.toString();
+        _testUploadFileName = null;
 
-        _status =
-            null;
+        _status = null;
 
-        _currentFileName =
-            null;
+        _error = e.toString();
       });
     }
   }
 
   // ============================================================
-  // PREPARE MODEL
+  // PREPARE PACKAGE
   // ============================================================
 
-  Future<void>
-      _pickAndPrepareFolder() async {
+  Future<void> _preparePackage() async {
     if (_isBusy) {
       return;
     }
@@ -525,35 +735,25 @@ class _TelegramStoragePageState
     }
 
     setState(() {
-      _isPackaging =
-          true;
+      _isPackaging = true;
 
-      _packageProgress =
-          0;
+      _packageProgress = 0;
 
       _packageStage =
-          'Preparing...';
+          'Preparing package...';
 
-      _preparedPackage =
-          null;
+      _preparedPackage = null;
 
-      _lastPackageUpload =
-          null;
+      _error = null;
 
-      _error =
-          null;
-
-      _status =
-          null;
+      _status = null;
     });
 
     try {
       final package =
           await _packager.prepareFolder(
-        folderPath:
-            folderPath,
-        onProgress:
-            (
+        folderPath: folderPath,
+        onProgress: (
           progress,
           stage,
         ) {
@@ -579,20 +779,19 @@ class _TelegramStoragePageState
         _preparedPackage =
             package;
 
-        _packageProgress =
-            1;
+        _isPackaging = false;
+
+        _packageProgress = 1;
 
         _packageStage =
             'Package ready.';
 
-        _isPackaging =
-            false;
-
         _status =
             package.isSplit
-                ? 'Package prepared in '
+                ? 'Package prepared with '
                     '${package.partCount} parts.'
-                : 'Package prepared as a single ZIP.';
+                : 'Package prepared as '
+                    'a single ZIP.';
       });
     } catch (e) {
       if (!mounted) {
@@ -600,206 +799,22 @@ class _TelegramStoragePageState
       }
 
       setState(() {
-        _isPackaging =
-            false;
+        _isPackaging = false;
 
-        _packageProgress =
-            0;
+        _packageProgress = 0;
 
-        _packageStage =
-            '';
+        _packageStage = '';
 
-        _error =
-            e.toString();
+        _error = e.toString();
       });
     }
   }
 
   // ============================================================
-  // UPLOAD PREPARED PACKAGE
+  // OPEN PACKAGE
   // ============================================================
 
-  Future<void>
-      _uploadPreparedPackage() async {
-    final channel =
-        _channel;
-
-    final package =
-        _preparedPackage;
-
-    if (channel == null ||
-        package == null ||
-        _isBusy) {
-      return;
-    }
-
-    final confirmed =
-        await showDialog<bool>(
-      context:
-          context,
-      builder:
-          (
-        context,
-      ) {
-        return AlertDialog(
-          title:
-              const Text(
-            'Upload Storage Package?',
-          ),
-          content:
-              Text(
-            '${package.sourceFolderName}\n\n'
-            '${package.partCount} storage '
-            '${package.partCount == 1 ? 'file' : 'files'}\n'
-            '${_formatSize(package.totalUploadSize)}\n\n'
-            'The package parts will be uploaded first. '
-            'The manifest will be uploaded last.',
-          ),
-          actions: [
-            TextButton(
-              onPressed:
-                  () {
-                Navigator.of(
-                  context,
-                ).pop(
-                  false,
-                );
-              },
-              child:
-                  const Text(
-                'Cancel',
-              ),
-            ),
-            FilledButton.icon(
-              onPressed:
-                  () {
-                Navigator.of(
-                  context,
-                ).pop(
-                  true,
-                );
-              },
-              icon:
-                  const Icon(
-                Icons.cloud_upload_outlined,
-              ),
-              label:
-                  const Text(
-                'Upload',
-              ),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true ||
-        !mounted) {
-      return;
-    }
-
-    setState(() {
-      _isUploadingPackage =
-          true;
-
-      _packageUploadProgress =
-          0;
-
-      _packageUploadStage =
-          'Starting package upload...';
-
-      _packageUploadFileName =
-          null;
-
-      _lastPackageUpload =
-          null;
-
-      _error =
-          null;
-
-      _status =
-          null;
-    });
-
-    try {
-      final result =
-          await _packageUploader
-              .uploadPackage(
-        channel:
-            channel,
-        package:
-            package,
-        onProgress:
-            (
-          progress,
-        ) {
-          if (!mounted) {
-            return;
-          }
-
-          setState(() {
-            _packageUploadProgress =
-                progress.overallProgress;
-
-            _packageUploadStage =
-                progress.stage;
-
-            _packageUploadFileName =
-                progress.currentFileName;
-          });
-        },
-      );
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isUploadingPackage =
-            false;
-
-        _packageUploadProgress =
-            1;
-
-        _packageUploadStage =
-            'Package stored successfully.';
-
-        _lastPackageUpload =
-            result;
-
-        _status =
-            result.alreadyUploaded
-                ? 'This package was already stored '
-                    'in Telegram. Nothing was duplicated.'
-                : 'Package uploaded successfully. '
-                    'Manifest message ID: '
-                    '${result.manifestMessageId}.';
-      });
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isUploadingPackage =
-            false;
-
-        _error =
-            e.toString();
-
-        _status =
-            'Package upload was interrupted. '
-            'You can retry; completed parts will be reused.';
-      });
-    }
-  }
-
-  // ============================================================
-  // PACKAGE ACTIONS
-  // ============================================================
-
-  Future<void>
-      _openPreparedPackage() async {
+  Future<void> _openPackageFolder() async {
     final package =
         _preparedPackage;
 
@@ -817,14 +832,16 @@ class _TelegramStoragePageState
       }
 
       setState(() {
-        _error =
-            e.toString();
+        _error = e.toString();
       });
     }
   }
 
-  Future<void>
-      _deletePreparedPackage() async {
+  // ============================================================
+  // DELETE PACKAGE
+  // ============================================================
+
+  Future<void> _deletePreparedPackage() async {
     final package =
         _preparedPackage;
 
@@ -835,28 +852,23 @@ class _TelegramStoragePageState
 
     final confirmed =
         await showDialog<bool>(
-      context:
-          context,
-      builder:
-          (
+      context: context,
+      builder: (
         context,
       ) {
         return AlertDialog(
-          title:
-              const Text(
+          title: const Text(
             'Delete Prepared Package?',
           ),
-          content:
-              const Text(
-            'The temporary ZIP, parts, manifest '
-            'and upload receipt will be deleted. '
-            'The original model folder and Telegram '
-            'files will not be changed.',
+          content: Text(
+            'Delete the temporary package for '
+            '"${package.displayName}"?\n\n'
+            'The original model folder will not '
+            'be modified.',
           ),
           actions: [
             TextButton(
-              onPressed:
-                  () {
+              onPressed: () {
                 Navigator.of(
                   context,
                 ).pop(
@@ -869,8 +881,7 @@ class _TelegramStoragePageState
               ),
             ),
             FilledButton(
-              onPressed:
-                  () {
+              onPressed: () {
                 Navigator.of(
                   context,
                 ).pop(
@@ -887,7 +898,8 @@ class _TelegramStoragePageState
       },
     );
 
-    if (confirmed != true) {
+    if (confirmed != true ||
+        !mounted) {
       return;
     }
 
@@ -901,11 +913,11 @@ class _TelegramStoragePageState
       }
 
       setState(() {
-        _preparedPackage =
-            null;
+        _preparedPackage = null;
 
-        _lastPackageUpload =
-            null;
+        _packageProgress = 0;
+
+        _packageStage = '';
 
         _status =
             'Prepared package deleted.';
@@ -916,100 +928,28 @@ class _TelegramStoragePageState
       }
 
       setState(() {
-        _error =
-            e.toString();
+        _error = e.toString();
       });
     }
   }
 
   // ============================================================
-  // FORGET CHANNEL
+  // JOURNAL FOLDER
   // ============================================================
 
-  Future<void> _forgetStorage() async {
-    if (_isBusy) {
-      return;
+  Future<void> _openJournalFolder() async {
+    try {
+      await _journalService
+          .openJournalFolder();
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _error = e.toString();
+      });
     }
-
-    final confirmed =
-        await showDialog<bool>(
-      context:
-          context,
-      builder:
-          (
-        context,
-      ) {
-        return AlertDialog(
-          title:
-              const Text(
-            'Forget Storage Channel?',
-          ),
-          content:
-              const Text(
-            'This removes only the local '
-            'configuration. Nothing will be '
-            'deleted from Telegram.',
-          ),
-          actions: [
-            TextButton(
-              onPressed:
-                  () {
-                Navigator.of(
-                  context,
-                ).pop(
-                  false,
-                );
-              },
-              child:
-                  const Text(
-                'Cancel',
-              ),
-            ),
-            FilledButton(
-              onPressed:
-                  () {
-                Navigator.of(
-                  context,
-                ).pop(
-                  true,
-                );
-              },
-              child:
-                  const Text(
-                'Forget',
-              ),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true) {
-      return;
-    }
-
-    await _storage.clearChannel();
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _channel =
-          null;
-
-      _lastPackageUpload =
-          null;
-
-      _status =
-          null;
-
-      _error =
-          null;
-
-      _uploadProgress =
-          0;
-    });
   }
 
   // ============================================================
@@ -1021,777 +961,483 @@ class _TelegramStoragePageState
     BuildContext context,
   ) {
     return Scaffold(
-      appBar:
-          AppBar(
+      appBar: AppBar(
         title:
             const Text(
           'Telegram Storage',
         ),
+        actions: [
+          IconButton(
+            tooltip:
+                'Refresh',
+            onPressed:
+                _isBusy
+                    ? null
+                    : _load,
+            icon:
+                const Icon(
+              Icons.refresh,
+            ),
+          ),
+          const SizedBox(
+            width: 8,
+          ),
+        ],
       ),
       body:
-          _buildBody(),
+          _isLoading
+              ? const Center(
+                  child:
+                      CircularProgressIndicator(),
+                )
+              : _buildBody(),
     );
   }
 
   Widget _buildBody() {
-    if (_isLoading) {
-      return const Center(
-        child:
-            CircularProgressIndicator(),
-      );
-    }
-
-    return ListView(
+    return SingleChildScrollView(
       padding:
           const EdgeInsets.all(
         24,
       ),
+      child: Center(
+        child: ConstrainedBox(
+          constraints:
+              const BoxConstraints(
+            maxWidth: 1100,
+          ),
+          child: Column(
+            crossAxisAlignment:
+                CrossAxisAlignment.stretch,
+            children: [
+              _buildHeader(),
+
+              const SizedBox(
+                height: 24,
+              ),
+
+              _buildWorkspaceStatus(),
+
+              const SizedBox(
+                height: 20,
+              ),
+
+              _buildChannelCard(
+                role:
+                    _StorageChannelRole
+                        .catalog,
+                channel:
+                    _workspace
+                        .catalogChannel,
+              ),
+
+              const SizedBox(
+                height: 16,
+              ),
+
+              _buildChannelCard(
+                role:
+                    _StorageChannelRole
+                        .files,
+                channel:
+                    _workspace
+                        .filesChannel,
+              ),
+
+              if (_status != null) ...[
+                const SizedBox(
+                  height: 20,
+                ),
+                _buildStatusCard(),
+              ],
+
+              if (_error != null) ...[
+                const SizedBox(
+                  height: 20,
+                ),
+                _buildErrorCard(),
+              ],
+
+              if (_isUploadingTestFile) ...[
+                const SizedBox(
+                  height: 20,
+                ),
+                _buildTestUploadProgress(),
+              ],
+
+              const SizedBox(
+                height: 28,
+              ),
+
+              _buildPackageSection(),
+
+              const SizedBox(
+                height: 28,
+              ),
+
+              _buildMaintenanceSection(),
+
+              const SizedBox(
+                height: 32,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ============================================================
+  // HEADER
+  // ============================================================
+
+  Widget _buildHeader() {
+    return Column(
+      crossAxisAlignment:
+          CrossAxisAlignment.start,
       children: [
         Text(
-          'Fabularium Cloud Storage',
+          'Fabularium Storage V3',
           style:
               Theme.of(context)
                   .textTheme
-                  .headlineSmall,
+                  .headlineMedium,
         ),
-
         const SizedBox(
-          height:
-              8,
+          height: 8,
         ),
-
-        const Text(
-          'Package model folders and store them '
-          'inside your private Telegram channel.',
+        Text(
+          'Use one private Telegram channel '
+          'for the visual catalog and another '
+          'private channel for model files.',
+          style:
+              Theme.of(context)
+                  .textTheme
+                  .bodyLarge,
         ),
-
-        const SizedBox(
-          height:
-              24,
-        ),
-
-        if (_channel == null)
-          _buildUnconfiguredCard()
-        else
-          _buildConfiguredCard(
-            _channel!,
-          ),
-
-        if (_isPackaging) ...[
-          const SizedBox(
-            height:
-                20,
-          ),
-          _buildPackagingProgress(),
-        ],
-
-        if (_preparedPackage != null) ...[
-          const SizedBox(
-            height:
-                20,
-          ),
-          _buildPreparedPackageCard(
-            _preparedPackage!,
-          ),
-        ],
-
-        if (_isUploadingPackage) ...[
-          const SizedBox(
-            height:
-                20,
-          ),
-          _buildPackageUploadProgress(),
-        ],
-
-        if (_lastPackageUpload != null) ...[
-          const SizedBox(
-            height:
-                20,
-          ),
-          _buildUploadResultCard(
-            _lastPackageUpload!,
-          ),
-        ],
-
-        if (_isUploading) ...[
-          const SizedBox(
-            height:
-                20,
-          ),
-          _buildUploadProgress(),
-        ],
-
-        if (_status != null) ...[
-          const SizedBox(
-            height:
-                20,
-          ),
-          _buildStatusCard(),
-        ],
-
-        if (_error != null) ...[
-          const SizedBox(
-            height:
-                20,
-          ),
-          _buildErrorCard(),
-        ],
-
-        const SizedBox(
-          height:
-              24,
-        ),
-
-        _buildPhaseCard(),
       ],
     );
   }
 
   // ============================================================
-  // CHANNEL CARDS
+  // WORKSPACE STATUS
   // ============================================================
 
-  Widget _buildUnconfiguredCard() {
+  Widget _buildWorkspaceStatus() {
+    final configured =
+        _workspace.isFullyConfigured;
+
     return Card(
-      child:
-          Padding(
+      child: Padding(
         padding:
             const EdgeInsets.all(
           20,
         ),
-        child:
-            Column(
+        child: Row(
+          children: [
+            CircleAvatar(
+              child: Icon(
+                configured
+                    ? Icons
+                        .cloud_done_outlined
+                    : Icons
+                        .cloud_off_outlined,
+              ),
+            ),
+            const SizedBox(
+              width: 16,
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment:
+                    CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    configured
+                        ? 'Storage workspace ready'
+                        : 'Storage workspace incomplete',
+                    style:
+                        Theme.of(context)
+                            .textTheme
+                            .titleMedium,
+                  ),
+                  const SizedBox(
+                    height: 4,
+                  ),
+                  Text(
+                    configured
+                        ? 'Catalog and Files channels '
+                            'are configured.'
+                        : 'Configure both Telegram '
+                            'channels before enabling '
+                            'the Storage V3 uploader.',
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              configured
+                  ? Icons.check_circle
+                  : Icons.info_outline,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ============================================================
+  // CHANNEL CARD
+  // ============================================================
+
+  Widget _buildChannelCard({
+    required _StorageChannelRole role,
+    required TelegramStorageChannel? channel,
+  }) {
+    final isCatalog =
+        role ==
+        _StorageChannelRole.catalog;
+
+    final title =
+        isCatalog
+            ? 'Catalog Channel'
+            : 'Files Channel';
+
+    final description =
+        isCatalog
+            ? 'Images, previews, model metadata '
+                'and catalog entries.'
+            : 'ZIP archives, package parts '
+                'and manifests.';
+
+    return Card(
+      child: Padding(
+        padding:
+            const EdgeInsets.all(
+          20,
+        ),
+        child: Column(
           crossAxisAlignment:
               CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Storage is not configured',
-              style:
-                  TextStyle(
-                fontSize:
-                    18,
-                fontWeight:
-                    FontWeight.bold,
-              ),
+            Row(
+              children: [
+                CircleAvatar(
+                  child: Icon(
+                    isCatalog
+                        ? Icons
+                            .photo_library_outlined
+                        : Icons
+                            .folder_zip_outlined,
+                  ),
+                ),
+                const SizedBox(
+                  width: 16,
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style:
+                            Theme.of(context)
+                                .textTheme
+                                .titleLarge,
+                      ),
+                      const SizedBox(
+                        height: 4,
+                      ),
+                      Text(
+                        description,
+                      ),
+                    ],
+                  ),
+                ),
+                if (channel != null)
+                  const Chip(
+                    avatar:
+                        Icon(
+                      Icons.check,
+                      size: 18,
+                    ),
+                    label:
+                        Text(
+                      'Configured',
+                    ),
+                  ),
+              ],
             ),
 
             const SizedBox(
-              height:
+              height: 20,
+            ),
+
+            if (channel != null)
+              Container(
+                width:
+                    double.infinity,
+                padding:
+                    const EdgeInsets.all(
                   16,
+                ),
+                decoration:
+                    BoxDecoration(
+                  border:
+                      Border.all(
+                    color:
+                        Theme.of(context)
+                            .dividerColor,
+                  ),
+                  borderRadius:
+                      BorderRadius.circular(
+                    12,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.lock_outline,
+                    ),
+                    const SizedBox(
+                      width: 12,
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment:
+                            CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            channel.title,
+                            style:
+                                Theme.of(context)
+                                    .textTheme
+                                    .titleMedium,
+                          ),
+                          const SizedBox(
+                            height: 2,
+                          ),
+                          Text(
+                            'Telegram channel ID: '
+                            '${channel.id}',
+                            style:
+                                Theme.of(context)
+                                    .textTheme
+                                    .bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              Container(
+                width:
+                    double.infinity,
+                padding:
+                    const EdgeInsets.all(
+                  16,
+                ),
+                decoration:
+                    BoxDecoration(
+                  border:
+                      Border.all(
+                    color:
+                        Theme.of(context)
+                            .dividerColor,
+                  ),
+                  borderRadius:
+                      BorderRadius.circular(
+                    12,
+                  ),
+                ),
+                child:
+                    const Text(
+                  'No channel configured.',
+                ),
+              ),
+
+            const SizedBox(
+              height: 16,
             ),
 
             Wrap(
-              spacing:
-                  12,
-              runSpacing:
-                  12,
+              spacing: 12,
+              runSpacing: 12,
               children: [
-                FilledButton.icon(
+                OutlinedButton.icon(
                   onPressed:
                       _isBusy
                           ? null
-                          : _createChannel,
+                          : () =>
+                              _selectExistingChannel(
+                                role,
+                              ),
+                  icon:
+                      const Icon(
+                    Icons.search,
+                  ),
+                  label:
+                      const Text(
+                    'Select Existing',
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed:
+                      _isBusy
+                          ? null
+                          : () =>
+                              _createChannel(
+                                role,
+                              ),
                   icon:
                       const Icon(
                     Icons.add,
                   ),
                   label:
                       const Text(
-                    'Create New Storage Channel',
+                    'Create Channel',
                   ),
                 ),
-
-                OutlinedButton.icon(
-                  onPressed:
-                      _isBusy
-                          ? null
-                          : _selectExistingChannel,
-                  icon:
-                      const Icon(
-                    Icons.cloud_queue,
-                  ),
-                  label:
-                      const Text(
-                    'Use Existing Telegram Channel',
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildConfiguredCard(
-    TelegramStorageChannel channel,
-  ) {
-    return Card(
-      child:
-          Padding(
-        padding:
-            const EdgeInsets.all(
-          20,
-        ),
-        child:
-            Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons.cloud_done_outlined,
-                  size:
-                      32,
-                ),
-
-                const SizedBox(
-                  width:
-                      12,
-                ),
-
-                Expanded(
-                  child:
-                      Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        channel.title,
-                        style:
-                            const TextStyle(
-                          fontSize:
-                              18,
-                          fontWeight:
-                              FontWeight.bold,
-                        ),
-                      ),
-
-                      Text(
-                        'Channel ID: ${channel.id}',
-                      ),
-                    ],
-                  ),
-                ),
-
-                const Chip(
-                  label:
-                      Text(
-                    'Configured',
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(
-              height:
-                  20,
-            ),
-
-            Wrap(
-              spacing:
-                  12,
-              runSpacing:
-                  12,
-              children: [
-                FilledButton.icon(
-                  onPressed:
-                      _isBusy
-                          ? null
-                          : _pickAndPrepareFolder,
-                  icon:
-                      const Icon(
-                    Icons.inventory_2_outlined,
-                  ),
-                  label:
-                      const Text(
-                    'Prepare Model Folder',
-                  ),
-                ),
-
-                OutlinedButton.icon(
-                  onPressed:
-                      _isBusy
-                          ? null
-                          : _pickAndUpload,
-                  icon:
-                      const Icon(
-                    Icons.cloud_upload_outlined,
-                  ),
-                  label:
-                      const Text(
-                    'Upload Test File',
-                  ),
-                ),
-
-                OutlinedButton.icon(
-                  onPressed:
-                      _isBusy
-                          ? null
-                          : _selectExistingChannel,
-                  icon:
-                      const Icon(
-                    Icons.swap_horiz,
-                  ),
-                  label:
-                      const Text(
-                    'Change Channel',
-                  ),
-                ),
-
-                TextButton.icon(
-                  onPressed:
-                      _isBusy
-                          ? null
-                          : _forgetStorage,
-                  icon:
-                      const Icon(
-                    Icons.link_off,
-                  ),
-                  label:
-                      const Text(
-                    'Forget Configuration',
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ============================================================
-  // PACKAGING
-  // ============================================================
-
-  Widget _buildPackagingProgress() {
-    return Card(
-      child:
-          Padding(
-        padding:
-            const EdgeInsets.all(
-          20,
-        ),
-        child:
-            Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            Text(
-              _packageStage,
-              style:
-                  const TextStyle(
-                fontWeight:
-                    FontWeight.bold,
-              ),
-            ),
-
-            const SizedBox(
-              height:
-                  14,
-            ),
-
-            LinearProgressIndicator(
-              value:
-                  _packageProgress,
-            ),
-
-            const SizedBox(
-              height:
-                  8,
-            ),
-
-            Text(
-              '${(_packageProgress * 100).toStringAsFixed(0)}%',
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPreparedPackageCard(
-    TelegramStoragePackage package,
-  ) {
-    return Card(
-      child:
-          Padding(
-        padding:
-            const EdgeInsets.all(
-          20,
-        ),
-        child:
-            Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons.inventory_2_outlined,
-                ),
-
-                const SizedBox(
-                  width:
-                      10,
-                ),
-
-                Expanded(
-                  child:
-                      Text(
-                    package.sourceFolderName,
-                    style:
-                        const TextStyle(
-                      fontSize:
-                          18,
-                      fontWeight:
-                          FontWeight.bold,
+                if (channel != null)
+                  TextButton.icon(
+                    onPressed:
+                        _isBusy
+                            ? null
+                            : () =>
+                                _clearChannel(
+                                  role,
+                                ),
+                    icon:
+                        const Icon(
+                      Icons
+                          .link_off_outlined,
+                    ),
+                    label:
+                        const Text(
+                      'Remove Configuration',
                     ),
                   ),
-                ),
-              ],
-            ),
-
-            const SizedBox(
-              height:
-                  16,
-            ),
-
-            Text(
-              'Original folder: '
-              '${_formatSize(package.sourceSize)}',
-            ),
-
-            Text(
-              'ZIP size: '
-              '${_formatSize(package.archiveSize)}',
-            ),
-
-            Text(
-              'Storage parts: '
-              '${package.partCount}',
-            ),
-
-            Text(
-              'Upload size: '
-              '${_formatSize(package.totalUploadSize)}',
-            ),
-
-            const SizedBox(
-              height:
-                  16,
-            ),
-
-            const Divider(),
-
-            ...package.parts.map(
-              (
-                part,
-              ) {
-                final uploadedId =
-                    _lastPackageUpload
-                        ?.partMessageIds[
-                      part.index
-                    ];
-
-                return ListTile(
-                  contentPadding:
-                      EdgeInsets.zero,
-                  leading:
-                      CircleAvatar(
-                    child:
-                        Text(
-                      '${part.index}',
+                if (!isCatalog &&
+                    channel != null)
+                  OutlinedButton.icon(
+                    onPressed:
+                        _isBusy
+                            ? null
+                            : _testFilesChannel,
+                    icon:
+                        const Icon(
+                      Icons
+                          .cloud_upload_outlined,
+                    ),
+                    label:
+                        const Text(
+                      'Test Upload',
                     ),
                   ),
-                  title:
-                      Text(
-                    part.fileName,
-                  ),
-                  subtitle:
-                      Text(
-                    uploadedId == null
-                        ? '${_formatSize(part.size)} • '
-                            '${part.sha256.substring(0, 12)}…'
-                        : '${_formatSize(part.size)} • '
-                            'Telegram message $uploadedId',
-                  ),
-                  trailing:
-                      uploadedId != null
-                          ? const Icon(
-                              Icons.cloud_done_outlined,
-                            )
-                          : null,
-                );
-              },
-            ),
-
-            const SizedBox(
-              height:
-                  16,
-            ),
-
-            Wrap(
-              spacing:
-                  12,
-              runSpacing:
-                  12,
-              children: [
-                FilledButton.icon(
-                  onPressed:
-                      _isBusy
-                          ? null
-                          : _uploadPreparedPackage,
-                  icon:
-                      const Icon(
-                    Icons.cloud_upload_outlined,
-                  ),
-                  label:
-                      const Text(
-                    'Upload Package to Telegram',
-                  ),
-                ),
-
-                OutlinedButton.icon(
-                  onPressed:
-                      _openPreparedPackage,
-                  icon:
-                      const Icon(
-                    Icons.folder_open,
-                  ),
-                  label:
-                      const Text(
-                    'Open Package Folder',
-                  ),
-                ),
-
-                OutlinedButton.icon(
-                  onPressed:
-                      _isBusy
-                          ? null
-                          : _deletePreparedPackage,
-                  icon:
-                      const Icon(
-                    Icons.delete_outline,
-                  ),
-                  label:
-                      const Text(
-                    'Delete Temporary Package',
-                  ),
-                ),
               ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ============================================================
-  // PACKAGE UPLOAD
-  // ============================================================
-
-  Widget _buildPackageUploadProgress() {
-    return Card(
-      child:
-          Padding(
-        padding:
-            const EdgeInsets.all(
-          20,
-        ),
-        child:
-            Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Uploading Storage Package',
-              style:
-                  TextStyle(
-                fontSize:
-                    18,
-                fontWeight:
-                    FontWeight.bold,
-              ),
-            ),
-
-            const SizedBox(
-              height:
-                  12,
-            ),
-
-            Text(
-              _packageUploadStage,
-            ),
-
-            if (_packageUploadFileName !=
-                null) ...[
-              const SizedBox(
-                height:
-                    4,
-              ),
-              Text(
-                _packageUploadFileName!,
-                maxLines:
-                    1,
-                overflow:
-                    TextOverflow.ellipsis,
-                style:
-                    Theme.of(context)
-                        .textTheme
-                        .bodySmall,
-              ),
-            ],
-
-            const SizedBox(
-              height:
-                  14,
-            ),
-
-            LinearProgressIndicator(
-              value:
-                  _packageUploadProgress,
-            ),
-
-            const SizedBox(
-              height:
-                  8,
-            ),
-
-            Text(
-              '${(_packageUploadProgress * 100).toStringAsFixed(0)}%',
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildUploadResultCard(
-    TelegramStoragePackageUploadResult result,
-  ) {
-    return Card(
-      child:
-          Padding(
-        padding:
-            const EdgeInsets.all(
-          20,
-        ),
-        child:
-            Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(
-                  Icons.cloud_done_outlined,
-                ),
-                SizedBox(
-                  width:
-                      10,
-                ),
-                Text(
-                  'Stored in Telegram',
-                  style:
-                      TextStyle(
-                    fontSize:
-                        18,
-                    fontWeight:
-                        FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(
-              height:
-                  14,
-            ),
-
-            Text(
-              'Channel: ${result.channelTitle}',
-            ),
-
-            Text(
-              'Parts: ${result.partMessageIds.length}',
-            ),
-
-            Text(
-              'Uploaded now: ${result.uploadedPartsNow}',
-            ),
-
-            Text(
-              'Reused: ${result.reusedParts}',
-            ),
-
-            Text(
-              'Manifest message ID: '
-              '${result.manifestMessageId}',
-            ),
-
-            const SizedBox(
-              height:
-                  8,
-            ),
-
-            Text(
-              result.alreadyUploaded
-                  ? 'The previous completed upload '
-                      'was detected locally.'
-                  : 'A local upload receipt was created.',
-              style:
-                  Theme.of(context)
-                      .textTheme
-                      .bodySmall,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ============================================================
-  // TEST UPLOAD PROGRESS
-  // ============================================================
-
-  Widget _buildUploadProgress() {
-    return Card(
-      child:
-          Padding(
-        padding:
-            const EdgeInsets.all(
-          20,
-        ),
-        child:
-            Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            Text(
-              _currentFileName ??
-                  'Uploading...',
-            ),
-
-            const SizedBox(
-              height:
-                  12,
-            ),
-
-            LinearProgressIndicator(
-              value:
-                  _uploadProgress,
-            ),
-
-            const SizedBox(
-              height:
-                  8,
-            ),
-
-            Text(
-              '${(_uploadProgress * 100).toStringAsFixed(0)}%',
             ),
           ],
         ),
@@ -1805,27 +1451,21 @@ class _TelegramStoragePageState
 
   Widget _buildStatusCard() {
     return Card(
-      child:
-          Padding(
+      child: Padding(
         padding:
             const EdgeInsets.all(
           16,
         ),
-        child:
-            Row(
+        child: Row(
           children: [
             const Icon(
               Icons.info_outline,
             ),
-
             const SizedBox(
-              width:
-                  12,
+              width: 12,
             ),
-
             Expanded(
-              child:
-                  Text(
+              child: Text(
                 _status!,
               ),
             ),
@@ -1837,34 +1477,37 @@ class _TelegramStoragePageState
 
   Widget _buildErrorCard() {
     return Card(
-      child:
-          Padding(
+      child: Padding(
         padding:
             const EdgeInsets.all(
           16,
         ),
-        child:
-            Row(
+        child: Row(
           crossAxisAlignment:
               CrossAxisAlignment.start,
           children: [
-            Icon(
+            const Icon(
               Icons.error_outline,
-              color:
-                  Theme.of(context)
-                      .colorScheme
-                      .error,
             ),
-
             const SizedBox(
-              width:
-                  12,
+              width: 12,
             ),
-
             Expanded(
-              child:
-                  Text(
+              child: Text(
                 _error!,
+              ),
+            ),
+            IconButton(
+              tooltip:
+                  'Dismiss',
+              onPressed: () {
+                setState(() {
+                  _error = null;
+                });
+              },
+              icon:
+                  const Icon(
+                Icons.close,
               ),
             ),
           ],
@@ -1873,50 +1516,581 @@ class _TelegramStoragePageState
     );
   }
 
-  Widget _buildPhaseCard() {
-    return const Card(
-      child:
-          Padding(
+  // ============================================================
+  // TEST PROGRESS
+  // ============================================================
+
+  Widget _buildTestUploadProgress() {
+    return Card(
+      child: Padding(
         padding:
-            EdgeInsets.all(
+            const EdgeInsets.all(
           20,
         ),
-        child:
+        child: Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
             Text(
-          'Telegram Storage\n\n'
-          '✓ Private storage channel\n'
-          '✓ Model ZIP packaging\n'
-          '✓ Automatic archive splitting\n'
-          '✓ SHA-256 integrity data\n'
-          '✓ Upload package parts\n'
-          '✓ Save Telegram message IDs\n'
-          '✓ Upload manifest last\n'
-          '✓ Retry without duplicating completed parts\n'
-          '✓ Local upload receipt\n'
-          '○ Browse stored packages\n'
-          '○ Restore package from Telegram\n'
-          '○ Verify downloaded SHA-256\n'
-          '○ Reassemble split archive',
+              _testUploadFileName ??
+                  'Uploading test file...',
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .titleMedium,
+            ),
+            const SizedBox(
+              height: 12,
+            ),
+            LinearProgressIndicator(
+              value:
+                  _testUploadProgress,
+            ),
+            const SizedBox(
+              height: 8,
+            ),
+            Text(
+              '${(_testUploadProgress * 100).toStringAsFixed(1)}%',
+            ),
+          ],
         ),
       ),
     );
   }
 
   // ============================================================
-  // SIZE
+  // PACKAGE SECTION
+  // ============================================================
+
+  Widget _buildPackageSection() {
+    return Card(
+      child: Padding(
+        padding:
+            const EdgeInsets.all(
+          20,
+        ),
+        child: Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.inventory_2_outlined,
+                ),
+                const SizedBox(
+                  width: 12,
+                ),
+                Text(
+                  'Model Package',
+                  style:
+                      Theme.of(context)
+                          .textTheme
+                          .titleLarge,
+                ),
+              ],
+            ),
+
+            const SizedBox(
+              height: 8,
+            ),
+
+            const Text(
+              'Prepare the model ZIP and gallery '
+              'information locally before uploading.',
+            ),
+
+            const SizedBox(
+              height: 20,
+            ),
+
+            if (_isPackaging) ...[
+              LinearProgressIndicator(
+                value:
+                    _packageProgress,
+              ),
+              const SizedBox(
+                height: 8,
+              ),
+              Text(
+                _packageStage,
+              ),
+              const SizedBox(
+                height: 20,
+              ),
+            ],
+
+            if (_preparedPackage !=
+                null)
+              _buildPreparedPackage(),
+
+            if (_preparedPackage ==
+                null)
+              FilledButton.icon(
+                onPressed:
+                    _isBusy
+                        ? null
+                        : _preparePackage,
+                icon:
+                    const Icon(
+                  Icons
+                      .create_new_folder_outlined,
+                ),
+                label:
+                    const Text(
+                  'Prepare Model Folder',
+                ),
+              ),
+
+            if (_preparedPackage !=
+                null) ...[
+              const SizedBox(
+                height: 16,
+              ),
+
+              Container(
+                width:
+                    double.infinity,
+                padding:
+                    const EdgeInsets.all(
+                  16,
+                ),
+                decoration:
+                    BoxDecoration(
+                  border:
+                      Border.all(
+                    color:
+                        Theme.of(context)
+                            .dividerColor,
+                  ),
+                  borderRadius:
+                      BorderRadius.circular(
+                    12,
+                  ),
+                ),
+                child: Row(
+                  crossAxisAlignment:
+                      CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons
+                          .construction_outlined,
+                    ),
+                    const SizedBox(
+                      width: 12,
+                    ),
+                    const Expanded(
+                      child: Text(
+                        'Storage V3 upload is temporarily '
+                        'disabled on this screen while we '
+                        'connect the new Catalog Channel + '
+                        'Files Channel flow with Resume, '
+                        'Repair and Clean. This prevents '
+                        'accidentally uploading the package '
+                        'using the old single-channel flow.',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPreparedPackage() {
+    final package =
+        _preparedPackage!;
+
+    return Container(
+      width:
+          double.infinity,
+      padding:
+          const EdgeInsets.all(
+        16,
+      ),
+      decoration:
+          BoxDecoration(
+        border:
+            Border.all(
+          color:
+              Theme.of(context)
+                  .dividerColor,
+        ),
+        borderRadius:
+            BorderRadius.circular(
+          12,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons
+                    .folder_zip_outlined,
+              ),
+              const SizedBox(
+                width: 12,
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment:
+                      CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      package.displayName,
+                      style:
+                          Theme.of(context)
+                              .textTheme
+                              .titleMedium,
+                    ),
+                    const SizedBox(
+                      height: 4,
+                    ),
+                    Text(
+                      'Package ID: '
+                      '${package.packageId}',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(
+            height: 16,
+          ),
+
+          Wrap(
+            spacing: 24,
+            runSpacing: 12,
+            children: [
+              _buildPackageStat(
+                'Archive',
+                _formatSize(
+                  package.archiveSize,
+                ),
+              ),
+              _buildPackageStat(
+                'Parts',
+                package.partCount
+                    .toString(),
+              ),
+              _buildPackageStat(
+                'Gallery',
+                '${package.galleryImageCount} images',
+              ),
+              _buildPackageStat(
+                'Source',
+                _formatSize(
+                  package.sourceSize,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(
+            height: 16,
+          ),
+
+          if (package.parts.isNotEmpty)
+            Column(
+              children:
+                  package.parts
+                      .map(
+                        (
+                          part,
+                        ) =>
+                            ListTile(
+                          contentPadding:
+                              EdgeInsets.zero,
+                          leading:
+                              const Icon(
+                            Icons
+                                .insert_drive_file_outlined,
+                          ),
+                          title:
+                              Text(
+                            part.fileName,
+                          ),
+                          subtitle:
+                              Text(
+                            _formatSize(
+                              part.size,
+                            ),
+                          ),
+                        ),
+                      )
+                      .toList(),
+            ),
+
+          const Divider(),
+
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              OutlinedButton.icon(
+                onPressed:
+                    _openPackageFolder,
+                icon:
+                    const Icon(
+                  Icons
+                      .folder_open_outlined,
+                ),
+                label:
+                    const Text(
+                  'Open Package Folder',
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed:
+                    _isBusy
+                        ? null
+                        : _deletePreparedPackage,
+                icon:
+                    const Icon(
+                  Icons.delete_outline,
+                ),
+                label:
+                    const Text(
+                  'Delete Prepared Package',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPackageStat(
+    String label,
+    String value,
+  ) {
+    return SizedBox(
+      width: 180,
+      child: Column(
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style:
+                Theme.of(context)
+                    .textTheme
+                    .bodySmall,
+          ),
+          const SizedBox(
+            height: 2,
+          ),
+          Text(
+            value,
+            style:
+                Theme.of(context)
+                    .textTheme
+                    .titleMedium,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // MAINTENANCE
+  // ============================================================
+
+  Widget _buildMaintenanceSection() {
+    return Card(
+      child: Padding(
+        padding:
+            const EdgeInsets.all(
+          20,
+        ),
+        child: Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons
+                      .build_circle_outlined,
+                ),
+                const SizedBox(
+                  width: 12,
+                ),
+                Expanded(
+                  child: Text(
+                    'Storage Maintenance',
+                    style:
+                        Theme.of(context)
+                            .textTheme
+                            .titleLarge,
+                  ),
+                ),
+                IconButton(
+                  tooltip:
+                      'Refresh journals',
+                  onPressed:
+                      _isBusy
+                          ? null
+                          : _reloadJournals,
+                  icon:
+                      const Icon(
+                    Icons.refresh,
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(
+              height: 8,
+            ),
+
+            Text(
+              _incompleteUploads.isEmpty
+                  ? 'No incomplete Storage V3 uploads '
+                      'were found.'
+                  : '${_incompleteUploads.length} '
+                      'incomplete upload'
+                      '${_incompleteUploads.length == 1 ? '' : 's'} '
+                      'found.',
+            ),
+
+            const SizedBox(
+              height: 16,
+            ),
+
+            if (_incompleteUploads.isNotEmpty)
+              Column(
+                children:
+                    _incompleteUploads
+                        .map(
+                          _buildJournalTile,
+                        )
+                        .toList(),
+              ),
+
+            const SizedBox(
+              height: 12,
+            ),
+
+            OutlinedButton.icon(
+              onPressed:
+                  _openJournalFolder,
+              icon:
+                  const Icon(
+                Icons
+                    .folder_open_outlined,
+              ),
+              label:
+                  const Text(
+                'Open Journal Folder',
+              ),
+            ),
+
+            if (_incompleteUploads.isNotEmpty) ...[
+              const SizedBox(
+                height: 12,
+              ),
+              const Text(
+                'Resume, Repair and Clean actions '
+                'will be connected in the next step.',
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildJournalTile(
+    TelegramStorageUploadJournal journal,
+  ) {
+    return ListTile(
+      contentPadding:
+          EdgeInsets.zero,
+      leading:
+          CircleAvatar(
+        child: Icon(
+          _journalStatusIcon(
+            journal.status,
+          ),
+        ),
+      ),
+      title:
+          Text(
+        journal.modelName.isEmpty
+            ? journal.packageId
+            : journal.modelName,
+      ),
+      subtitle:
+          Text(
+        '${journal.status.value.toUpperCase()}'
+        ' • '
+        '${journal.publishedFileGroupCount} '
+        'published file group'
+        '${journal.publishedFileGroupCount == 1 ? '' : 's'}'
+        '${journal.lastError == null ? '' : '\n${journal.lastError}'}',
+      ),
+      isThreeLine:
+          journal.lastError != null,
+      trailing:
+          Text(
+        _formatDate(
+          journal.updatedAt,
+        ),
+      ),
+    );
+  }
+
+  IconData _journalStatusIcon(
+    TelegramStorageUploadStatus status,
+  ) {
+    switch (status) {
+      case TelegramStorageUploadStatus.preparing:
+        return Icons
+            .inventory_2_outlined;
+
+      case TelegramStorageUploadStatus.uploading:
+        return Icons
+            .cloud_upload_outlined;
+
+      case TelegramStorageUploadStatus.failed:
+        return Icons
+            .error_outline;
+
+      case TelegramStorageUploadStatus.stored:
+        return Icons
+            .cloud_done_outlined;
+
+      case TelegramStorageUploadStatus.removing:
+        return Icons
+            .delete_sweep_outlined;
+    }
+  }
+
+  // ============================================================
+  // FORMAT
   // ============================================================
 
   String _formatSize(
     int bytes,
   ) {
-    const kb =
+    const int kb =
         1024;
 
-    const mb =
-        kb * 1024;
+    const int mb =
+        1024 * kb;
 
-    const gb =
-        mb * 1024;
+    const int gb =
+        1024 * mb;
 
     if (bytes >= gb) {
       return '${(bytes / gb).toStringAsFixed(2)} GB';
@@ -1927,9 +2101,51 @@ class _TelegramStoragePageState
     }
 
     if (bytes >= kb) {
-      return '${(bytes / kb).toStringAsFixed(1)} KB';
+      return '${(bytes / kb).toStringAsFixed(2)} KB';
     }
 
     return '$bytes B';
+  }
+
+  String _formatDate(
+    DateTime value,
+  ) {
+    final local =
+        value.toLocal();
+
+    final day =
+        local.day
+            .toString()
+            .padLeft(
+              2,
+              '0',
+            );
+
+    final month =
+        local.month
+            .toString()
+            .padLeft(
+              2,
+              '0',
+            );
+
+    final hour =
+        local.hour
+            .toString()
+            .padLeft(
+              2,
+              '0',
+            );
+
+    final minute =
+        local.minute
+            .toString()
+            .padLeft(
+              2,
+              '0',
+            );
+
+    return '$day/$month '
+        '$hour:$minute';
   }
 }

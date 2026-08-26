@@ -4,10 +4,11 @@ import 'dart:math';
 
 import 'package:path/path.dart' as p;
 
-import '../models/telegram_storage_channel.dart';
 import '../models/telegram_storage_package.dart';
+import '../models/telegram_storage_upload_journal.dart';
+import '../models/telegram_storage_workspace.dart';
 import 'telegram_storage_media_group_service.dart';
-import 'telegram_storage_packager.dart';
+import 'telegram_storage_upload_journal_service.dart';
 
 typedef TelegramStoragePackageUploadProgressCallback =
     void Function(
@@ -20,30 +21,53 @@ class TelegramStoragePackageUploader {
   static final TelegramStoragePackageUploader instance =
       TelegramStoragePackageUploader._();
 
-  final TelegramStoragePackager _packager =
-      TelegramStoragePackager.instance;
-
   final TelegramStorageMediaGroupService _mediaGroups =
       TelegramStorageMediaGroupService.instance;
 
+  final TelegramStorageUploadJournalService _journalService =
+      TelegramStorageUploadJournalService.instance;
+
   /*
-   * 9 partes + manifest = 10 documentos
-   * no último grupo.
+   * Agora o manifest é enviado DEPOIS das partes.
+   *
+   * Portanto cada grupo pode usar os 10 slots
+   * disponíveis para arquivos.
    */
   static const int _partsPerDocumentGroup =
-      9;
+      10;
 
   // ============================================================
-  // UPLOAD PACKAGE
+  // UPLOAD
   // ============================================================
 
   Future<TelegramStoragePackageUploadResult>
       uploadPackage({
-    required TelegramStorageChannel channel,
+    required TelegramStorageWorkspace workspace,
     required TelegramStoragePackage package,
     TelegramStoragePackageUploadProgressCallback?
         onProgress,
   }) async {
+    final catalogChannel =
+        workspace.catalogChannel;
+
+    final filesChannel =
+        workspace.filesChannel;
+
+    if (catalogChannel == null ||
+        filesChannel == null) {
+      throw const TelegramStoragePackageUploadException(
+        'Configure both Catalog Channel and Files Channel '
+        'before uploading a package.',
+      );
+    }
+
+    if (catalogChannel.id ==
+        filesChannel.id) {
+      throw const TelegramStoragePackageUploadException(
+        'Catalog Channel and Files Channel must be different.',
+      );
+    }
+
     if (package.parts.isEmpty) {
       throw const TelegramStoragePackageUploadException(
         'The prepared package contains no files.',
@@ -54,56 +78,73 @@ class TelegramStoragePackageUploader {
       package,
     );
 
-    /*
-     * Manifest V2 não depende dos messageIds.
-     *
-     * Dessa forma ele pode entrar no próprio
-     * media group final.
-     */
-    await _packager.writeManifest(
-      package,
-      channelId:
-          channel.id,
-      channelTitle:
-          channel.title,
-    );
-
     final plans =
         _createFileGroupPlans(
       package,
     );
 
-    var receipt =
-        await _loadReceipt(
-      package:
-          package,
-      channel:
-          channel,
+    // ==========================================================
+    // JOURNAL
+    // ==========================================================
+
+    var journal =
+        await _journalService.load(
+      package.packageId,
     );
 
-    receipt ??=
-        _UploadReceiptState(
+    if (journal != null) {
+      if (journal.catalogChannel.id !=
+              catalogChannel.id ||
+          journal.filesChannel.id !=
+              filesChannel.id) {
+        throw const TelegramStoragePackageUploadException(
+          'This package already has an upload journal '
+          'linked to different Telegram channels.',
+        );
+      }
+    }
+
+    journal ??=
+        TelegramStorageUploadJournal(
       packageId:
           package.packageId,
-      channelId:
-          channel.id,
-      channelTitle:
-          channel.title,
-      gallery:
+      modelName:
+          package.displayName,
+      stagingDirectoryPath:
+          package.stagingDirectoryPath,
+      catalogChannel:
+          catalogChannel,
+      filesChannel:
+          filesChannel,
+      status:
+          TelegramStorageUploadStatus.preparing,
+      createdAt:
+          DateTime.now(),
+      updatedAt:
+          DateTime.now(),
+      galleryGroupedId:
           null,
+      galleryMessageIds:
+          const <int>[],
       fileGroups:
-          <int, _ReceiptFileGroup>{},
-      completed:
-          false,
+          <int, TelegramStorageUploadJournalGroup>{},
+      manifestMessageId:
+          null,
+      lastError:
+          null,
+    );
+
+    await _journalService.save(
+      journal,
     );
 
     // ==========================================================
-    // ALREADY COMPLETE
+    // ALREADY STORED
     // ==========================================================
 
-    if (_isReceiptComplete(
-      receipt:
-          receipt,
+    if (_isJournalComplete(
+      journal:
+          journal,
       package:
           package,
       plans:
@@ -112,10 +153,8 @@ class TelegramStoragePackageUploader {
       return _buildResult(
         package:
             package,
-        channel:
-            channel,
-        receipt:
-            receipt,
+        journal:
+            journal,
         uploadedPartsNow:
             0,
         reusedParts:
@@ -125,163 +164,180 @@ class TelegramStoragePackageUploader {
       );
     }
 
+    journal =
+        await _journalService.markUploading(
+      journal,
+    );
+
     int uploadedPartsNow = 0;
 
     int reusedParts = 0;
 
-    // ==========================================================
-    // 1. GALLERY
-    // ==========================================================
+    try {
+      // ========================================================
+      // 1. CATALOG GALLERY
+      // ========================================================
 
-    final galleryPaths =
-        package.galleryImagePaths;
+      final galleryPaths =
+          package.galleryImagePaths;
 
-    if (galleryPaths.isNotEmpty) {
-      final galleryComplete =
-          receipt.gallery != null &&
-              receipt
-                      .gallery!
-                      .messageIds
-                      .length ==
-                  galleryPaths.length;
+      if (galleryPaths.isNotEmpty) {
+        final galleryComplete =
+            journal.galleryMessageIds.length ==
+                galleryPaths.length;
 
-      if (!galleryComplete) {
-        _report(
-          onProgress,
-          overallProgress:
-              0,
-          stage:
-              'Uploading catalog gallery...',
-          currentPart:
-              0,
-          totalParts:
-              package.partCount,
-        );
+        if (!galleryComplete) {
+          _report(
+            onProgress,
+            overallProgress:
+                0,
+            stage:
+                'Uploading catalog gallery...',
+            currentPart:
+                0,
+            totalParts:
+                package.partCount,
+            currentFileName:
+                null,
+            currentFileProgress:
+                0,
+          );
 
-        final galleryItems =
-            <TelegramStorageMediaItem>[];
+          final galleryItems =
+              <TelegramStorageMediaItem>[];
 
-        final caption =
-            _buildGalleryCaption(
-          package,
-        );
+          final caption =
+              _buildGalleryCaption(
+            package,
+          );
 
-        for (int index = 0;
-            index < galleryPaths.length;
-            index++) {
-          final path =
-              galleryPaths[index];
+          for (int index = 0;
+              index < galleryPaths.length;
+              index++) {
+            final imagePath =
+                galleryPaths[index];
 
-          galleryItems.add(
-            TelegramStorageMediaItem(
-              kind:
-                  TelegramStorageMediaKind
-                      .photo,
-              filePath:
-                  path,
-              fileName:
-                  p.basename(
-                path,
+            galleryItems.add(
+              TelegramStorageMediaItem(
+                kind:
+                    TelegramStorageMediaKind.photo,
+                filePath:
+                    imagePath,
+                fileName:
+                    p.basename(
+                  imagePath,
+                ),
+                mimeType:
+                    _mimeTypeForImage(
+                  imagePath,
+                ),
+                caption:
+                    index == 0
+                        ? caption
+                        : '',
+                randomIdKey:
+                    '${package.packageId}'
+                    ':catalog:gallery:$index',
               ),
-              mimeType:
-                  _mimeTypeForImage(
-                path,
-              ),
-              caption:
-                  index == 0
-                      ? caption
-                      : '',
-              randomIdKey:
-                  '${package.packageId}'
-                  ':gallery:$index',
-            ),
+            );
+          }
+
+          final galleryResult =
+              await _mediaGroups.sendGroup(
+            channel:
+                catalogChannel,
+            items:
+                galleryItems,
+            onProgress:
+                (
+              progress,
+              stage,
+            ) {
+              _report(
+                onProgress,
+                overallProgress:
+                    progress *
+                        0.10,
+                stage:
+                    stage,
+                currentPart:
+                    0,
+                totalParts:
+                    package.partCount,
+                currentFileName:
+                    null,
+                currentFileProgress:
+                    progress,
+              );
+            },
+          );
+
+          journal =
+              journal.copyWith(
+            galleryGroupedId:
+                galleryResult.groupedId,
+            galleryMessageIds:
+                galleryResult.messageIds,
+          );
+
+          await _journalService.save(
+            journal,
           );
         }
-
-        final galleryResult =
-            await _mediaGroups.sendGroup(
-          channel:
-              channel,
-          items:
-              galleryItems,
-          onProgress:
-              (
-            progress,
-            stage,
-          ) {
-            _report(
-              onProgress,
-              overallProgress:
-                  progress *
-                      0.10,
-              stage:
-                  stage,
-              currentPart:
-                  0,
-              totalParts:
-                  package.partCount,
-            );
-          },
-        );
-
-        receipt =
-            receipt.copyWith(
-          gallery:
-              _ReceiptGallery(
-            groupedId:
-                galleryResult.groupedId,
-            messageIds:
-                galleryResult.messageIds,
-          ),
-        );
-
-        await _writeReceipt(
-          package:
-              package,
-          receipt:
-              receipt,
-        );
       }
-    }
-
-    // ==========================================================
-    // 2. DOCUMENT GROUPS
-    // ==========================================================
-
-    final totalFileBytes =
-        package.parts.fold<int>(
-      0,
-      (
-        total,
-        part,
-      ) =>
-          total +
-          part.size,
-    );
-
-    int completedFileBytes = 0;
-
-    for (final plan
-        in plans) {
-      final existing =
-          receipt.fileGroups[
-            plan.groupIndex
-          ];
 
       // ========================================================
-      // REUSE COMPLETE GROUP
+      // 2. FILE GROUPS
       // ========================================================
 
-      if (_isFileGroupComplete(
-        plan:
-            plan,
-        receiptGroup:
-            existing,
-      )) {
-        reusedParts +=
-            plan.parts.length;
+      final totalFileBytes =
+          package.parts.fold<int>(
+        0,
+        (
+          total,
+          part,
+        ) =>
+            total +
+            part.size,
+      );
 
-        completedFileBytes +=
+      int completedFileBytes = 0;
+
+      for (final plan
+          in plans) {
+        final existing =
+            journal?.fileGroups[
+              plan.groupIndex
+            ];
+
+        // ======================================================
+        // ALREADY COMPLETED GROUP
+        // ======================================================
+
+        if (_isFileGroupComplete(
+          plan:
+              plan,
+          journalGroup:
+              existing,
+        )) {
+          reusedParts +=
+              plan.parts.length;
+
+          completedFileBytes +=
+              plan.parts.fold<int>(
+            0,
+            (
+              total,
+              part,
+            ) =>
+                total +
+                part.size,
+          );
+
+          continue;
+        }
+
+        final groupBytes =
             plan.parts.fold<int>(
           0,
           (
@@ -292,271 +348,388 @@ class TelegramStoragePackageUploader {
               part.size,
         );
 
-        continue;
-      }
+        final bytesBeforeGroup =
+            completedFileBytes;
 
-      final items =
-          <TelegramStorageMediaItem>[];
-
-      final caption =
-          _buildFilesCaption(
-        package:
-            package,
-        groupIndex:
-            plan.groupIndex,
-        totalGroups:
-            plans.length,
-        includesManifest:
-            plan.includesManifest,
-      );
-
-      // ========================================================
-      // PARTS
-      // ========================================================
-
-      for (int index = 0;
-          index < plan.parts.length;
-          index++) {
-        final part =
-            plan.parts[index];
-
-        items.add(
-          TelegramStorageMediaItem(
-            kind:
-                TelegramStorageMediaKind
-                    .document,
-            filePath:
-                part.filePath,
-            fileName:
-                part.fileName,
-            mimeType:
-                'application/octet-stream',
-            caption:
-                index == 0
-                    ? caption
-                    : '',
-            randomIdKey:
-                '${package.packageId}'
-                ':files:${plan.groupIndex}'
-                ':part:${part.index}',
-          ),
+        final caption =
+            _buildFilesCaption(
+          package:
+              package,
+          groupIndex:
+              plan.groupIndex,
+          totalGroups:
+              plans.length,
         );
-      }
 
-      // ========================================================
-      // MANIFEST - ONLY LAST GROUP
-      // ========================================================
+        final items =
+            <TelegramStorageMediaItem>[];
 
-      if (plan.includesManifest) {
-        items.add(
-          TelegramStorageMediaItem(
-            kind:
-                TelegramStorageMediaKind
-                    .document,
-            filePath:
-                package.manifestPath,
-            fileName:
-                p.basename(
-              package.manifestPath,
+        for (int index = 0;
+            index < plan.parts.length;
+            index++) {
+          final part =
+              plan.parts[index];
+
+          items.add(
+            TelegramStorageMediaItem(
+              kind:
+                  TelegramStorageMediaKind.document,
+              filePath:
+                  part.filePath,
+              fileName:
+                  part.fileName,
+              mimeType:
+                  'application/octet-stream',
+              caption:
+                  index == 0
+                      ? caption
+                      : '',
+              randomIdKey:
+                  '${package.packageId}'
+                  ':storage'
+                  ':group:${plan.groupIndex}'
+                  ':part:${part.index}',
             ),
-            mimeType:
-                'application/json',
-            caption:
-                plan.parts.isEmpty
-                    ? caption
-                    : '',
-            randomIdKey:
-                '${package.packageId}'
-                ':files:${plan.groupIndex}'
-                ':manifest',
+          );
+        }
+
+        _report(
+          onProgress,
+          overallProgress:
+              _mapFilesProgress(
+            completedFileBytes,
+            totalFileBytes,
           ),
+          stage:
+              'Uploading files '
+              '${plan.groupIndex}/${plans.length}...',
+          currentPart:
+              plan.parts.first.index,
+          totalParts:
+              package.partCount,
+          currentFileName:
+              plan.parts.first.fileName,
+          currentFileProgress:
+              0,
+        );
+
+        final result =
+            await _mediaGroups.sendGroup(
+          channel:
+              filesChannel,
+          items:
+              items,
+          onProgress:
+              (
+            progress,
+            stage,
+          ) {
+            final estimatedBytes =
+                bytesBeforeGroup +
+                    (
+                      groupBytes *
+                          progress
+                    );
+
+            _report(
+              onProgress,
+              overallProgress:
+                  _mapFilesProgress(
+                estimatedBytes,
+                totalFileBytes,
+              ),
+              stage:
+                  stage,
+              currentPart:
+                  plan.parts.first.index,
+              totalParts:
+                  package.partCount,
+              currentFileName:
+                  plan.parts.first.fileName,
+              currentFileProgress:
+                  progress,
+            );
+          },
+        );
+
+        if (result.messageIds.length !=
+            plan.parts.length) {
+          throw const TelegramStoragePackageUploadException(
+            'Telegram returned an incomplete file group.',
+          );
+        }
+
+        final partMessageIds =
+            <int, int>{};
+
+        for (int index = 0;
+            index < plan.parts.length;
+            index++) {
+          final part =
+              plan.parts[index];
+
+          partMessageIds[
+              part.index] =
+              result.messageIds[index];
+        }
+
+        final updatedGroups =
+            Map<int,
+                TelegramStorageUploadJournalGroup>.from(
+          journal!.fileGroups,
+        );
+
+        updatedGroups[
+            plan.groupIndex] =
+            TelegramStorageUploadJournalGroup(
+          groupIndex:
+              plan.groupIndex,
+          groupedId:
+              result.groupedId,
+          messageIds:
+              result.messageIds,
+          partMessageIds:
+              partMessageIds,
+        );
+
+        journal =
+            journal.copyWith(
+          fileGroups:
+              updatedGroups,
+        );
+
+        /*
+         * IMPORTANT:
+         *
+         * cada grupo é persistido imediatamente.
+         *
+         * Se o próximo grupo falhar, este grupo
+         * não será reenviado no retry.
+         */
+        await _journalService.save(
+          journal,
+        );
+
+        uploadedPartsNow +=
+            plan.parts.length;
+
+        completedFileBytes +=
+            groupBytes;
+      }
+
+      // ========================================================
+      // 3. FINAL MANIFEST V3
+      // ========================================================
+
+      if (!journal!.hasManifest) {
+        _report(
+          onProgress,
+          overallProgress:
+              0.95,
+          stage:
+              'Creating final manifest...',
+          currentPart:
+              package.partCount,
+          totalParts:
+              package.partCount,
+          currentFileName:
+              p.basename(
+            package.manifestPath,
+          ),
+          currentFileProgress:
+              0,
+        );
+
+        await _writeManifestV3(
+          package:
+              package,
+          journal:
+              journal,
+        );
+
+        final manifestItem =
+            TelegramStorageMediaItem(
+          kind:
+              TelegramStorageMediaKind.document,
+          filePath:
+              package.manifestPath,
+          fileName:
+              p.basename(
+            package.manifestPath,
+          ),
+          mimeType:
+              'application/json',
+          caption:
+              _buildManifestCaption(
+            package,
+          ),
+          randomIdKey:
+              '${package.packageId}'
+              ':storage:manifest:v3',
+        );
+
+        final manifestResult =
+            await _mediaGroups.sendGroup(
+          channel:
+              filesChannel,
+          items:
+              <TelegramStorageMediaItem>[
+            manifestItem,
+          ],
+          onProgress:
+              (
+            progress,
+            stage,
+          ) {
+            _report(
+              onProgress,
+              overallProgress:
+                  0.95 +
+                      (
+                        progress *
+                            0.05
+                      ),
+              stage:
+                  stage,
+              currentPart:
+                  package.partCount,
+              totalParts:
+                  package.partCount,
+              currentFileName:
+                  p.basename(
+                package.manifestPath,
+              ),
+              currentFileProgress:
+                  progress,
+            );
+          },
+        );
+
+        if (manifestResult.messageIds.length !=
+            1) {
+          throw const TelegramStoragePackageUploadException(
+            'Telegram did not return the manifest message ID.',
+          );
+        }
+
+        journal =
+            journal.copyWith(
+          manifestMessageId:
+              manifestResult.messageIds.single,
+        );
+
+        await _journalService.save(
+          journal,
         );
       }
 
-      final bytesBeforeGroup =
-          completedFileBytes;
+      // ========================================================
+      // 4. STORED
+      // ========================================================
 
-      final groupPartBytes =
-          plan.parts.fold<int>(
-        0,
-        (
-          total,
-          part,
-        ) =>
-            total +
-            part.size,
+      journal =
+          await _journalService.markStored(
+        journal,
       );
 
       _report(
         onProgress,
         overallProgress:
-            _mapFileProgress(
-          completedFileBytes,
-          totalFileBytes,
-        ),
+            1,
         stage:
-            'Uploading files '
-            '${plan.groupIndex}/'
-            '${plans.length}...',
+            'Package stored successfully.',
         currentPart:
-            plan.parts.isEmpty
-                ? 0
-                : plan.parts.first.index,
+            package.partCount,
         totalParts:
             package.partCount,
+        currentFileName:
+            null,
+        currentFileProgress:
+            1,
       );
 
-      // ========================================================
-      // SEND MEDIA GROUP
-      // ========================================================
-
-      final result =
-          await _mediaGroups.sendGroup(
-        channel:
-            channel,
-        items:
-            items,
-        onProgress:
-            (
-          progress,
-          stage,
-        ) {
-          final insideBytes =
-              groupPartBytes *
-                  progress;
-
-          final effective =
-              bytesBeforeGroup +
-                  insideBytes;
-
-          _report(
-            onProgress,
-            overallProgress:
-                _mapFileProgress(
-              effective,
-              totalFileBytes,
-            ),
-            stage:
-                stage,
-            currentPart:
-                plan.parts.isEmpty
-                    ? 0
-                    : plan.parts.first.index,
-            totalParts:
-                package.partCount,
-          );
-        },
-      );
-
-      if (result.messageIds.length !=
-          items.length) {
-        throw const TelegramStoragePackageUploadException(
-          'Telegram returned an incomplete '
-          'document group.',
-        );
-      }
-
-      // ========================================================
-      // MESSAGE IDS
-      // ========================================================
-
-      final partMessageIds =
-          <int, int>{};
-
-      for (int index = 0;
-          index < plan.parts.length;
-          index++) {
-        partMessageIds[
-            plan.parts[index].index] =
-            result.messageIds[index];
-      }
-
-      int? manifestMessageId;
-
-      if (plan.includesManifest) {
-        manifestMessageId =
-            result.messageIds.last;
-      }
-
-      receipt.fileGroups[
-          plan.groupIndex] =
-          _ReceiptFileGroup(
-        groupIndex:
-            plan.groupIndex,
-        groupedId:
-            result.groupedId,
-        messageIds:
-            result.messageIds,
-        partMessageIds:
-            partMessageIds,
-        manifestMessageId:
-            manifestMessageId,
-      );
-
-      uploadedPartsNow +=
-          plan.parts.length;
-
-      completedFileBytes +=
-          groupPartBytes;
-
-      /*
-       * Persistimos depois de cada media group.
-       */
-      await _writeReceipt(
+      return _buildResult(
         package:
             package,
-        receipt:
-            receipt,
+        journal:
+            journal,
+        uploadedPartsNow:
+            uploadedPartsNow,
+        reusedParts:
+            reusedParts,
+        alreadyUploaded:
+            false,
       );
+    } catch (error) {
+      try {
+        journal =
+            await _journalService.markFailed(
+          journal!,
+          error,
+        );
+      } catch (_) {}
+
+      rethrow;
     }
-
-    // ==========================================================
-    // COMPLETE
-    // ==========================================================
-
-    receipt =
-        receipt.copyWith(
-      completed:
-          true,
-    );
-
-    await _writeReceipt(
-      package:
-          package,
-      receipt:
-          receipt,
-    );
-
-    _report(
-      onProgress,
-      overallProgress:
-          1,
-      stage:
-          'Package stored successfully.',
-      currentPart:
-          package.partCount,
-      totalParts:
-          package.partCount,
-    );
-
-    return _buildResult(
-      package:
-          package,
-      channel:
-          channel,
-      receipt:
-          receipt,
-      uploadedPartsNow:
-          uploadedPartsNow,
-      reusedParts:
-          reusedParts,
-      alreadyUploaded:
-          false,
-    );
   }
 
   // ============================================================
-  // GROUP PLANS
+  // VALIDATION
+  // ============================================================
+
+  Future<void> _validateLocalPackage(
+    TelegramStoragePackage package,
+  ) async {
+    final staging =
+        Directory(
+      package.stagingDirectoryPath,
+    );
+
+    if (!await staging.exists()) {
+      throw const TelegramStoragePackageUploadException(
+        'The package staging folder no longer exists.',
+      );
+    }
+
+    for (final part
+        in package.parts) {
+      final file =
+          File(
+        part.filePath,
+      );
+
+      if (!await file.exists()) {
+        throw TelegramStoragePackageUploadException(
+          'Missing storage part: ${part.fileName}',
+        );
+      }
+
+      final length =
+          await file.length();
+
+      if (length !=
+          part.size) {
+        throw TelegramStoragePackageUploadException(
+          'Storage part size changed: ${part.fileName}',
+        );
+      }
+    }
+
+    for (final imagePath
+        in package.galleryImagePaths) {
+      if (!await File(
+        imagePath,
+      ).exists()) {
+        throw TelegramStoragePackageUploadException(
+          'Gallery image no longer exists: '
+          '${p.basename(imagePath)}',
+        );
+      }
+    }
+  }
+
+  // ============================================================
+  // GROUP PLAN
   // ============================================================
 
   List<_FileGroupPlan>
@@ -577,7 +750,7 @@ class TelegramStoragePackageUploader {
             ),
           );
 
-    final groups =
+    final result =
         <_FileGroupPlan>[];
 
     int offset = 0;
@@ -586,36 +759,26 @@ class TelegramStoragePackageUploader {
 
     while (offset <
         sorted.length) {
-      final int remaining =
+      final remaining =
           sorted.length -
               offset;
 
-      final int count =
+      final count =
           min<int>(
         _partsPerDocumentGroup,
         remaining,
       );
 
-      final parts =
-          sorted.sublist(
-        offset,
-        offset +
-            count,
-      );
-
-      final bool isLast =
-          offset +
-                  count >=
-              sorted.length;
-
-      groups.add(
+      result.add(
         _FileGroupPlan(
           groupIndex:
               groupIndex,
           parts:
-              parts,
-          includesManifest:
-              isLast,
+              sorted.sublist(
+            offset,
+            offset +
+                count,
+          ),
         ),
       );
 
@@ -625,11 +788,283 @@ class TelegramStoragePackageUploader {
       groupIndex++;
     }
 
-    return groups;
+    return result;
   }
 
   // ============================================================
-  // GALLERY CAPTION
+  // JOURNAL VALIDATION
+  // ============================================================
+
+  bool _isFileGroupComplete({
+    required _FileGroupPlan plan,
+    required TelegramStorageUploadJournalGroup?
+        journalGroup,
+  }) {
+    if (journalGroup == null) {
+      return false;
+    }
+
+    if (journalGroup.messageIds.length !=
+        plan.parts.length) {
+      return false;
+    }
+
+    for (final messageId
+        in journalGroup.messageIds) {
+      if (messageId <= 0) {
+        return false;
+      }
+    }
+
+    for (final part
+        in plan.parts) {
+      final messageId =
+          journalGroup.partMessageIds[
+            part.index
+          ];
+
+      if (messageId == null ||
+          messageId <= 0) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  bool _isJournalComplete({
+    required TelegramStorageUploadJournal journal,
+    required TelegramStoragePackage package,
+    required List<_FileGroupPlan> plans,
+  }) {
+    if (!journal.isStored ||
+        !journal.hasManifest) {
+      return false;
+    }
+
+    if (package.galleryImagePaths.isNotEmpty &&
+        journal.galleryMessageIds.length !=
+            package.galleryImagePaths.length) {
+      return false;
+    }
+
+    for (final plan
+        in plans) {
+      if (!_isFileGroupComplete(
+        plan:
+            plan,
+        journalGroup:
+            journal.fileGroups[
+              plan.groupIndex
+            ],
+      )) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  // ============================================================
+  // MANIFEST V3
+  // ============================================================
+
+  Future<void> _writeManifestV3({
+    required TelegramStoragePackage package,
+    required TelegramStorageUploadJournal journal,
+  }) async {
+    final partMessageIds =
+        <int, int>{};
+
+    final groups =
+        journal.fileGroups.values
+            .toList()
+          ..sort(
+            (
+              a,
+              b,
+            ) =>
+                a.groupIndex.compareTo(
+              b.groupIndex,
+            ),
+          );
+
+    for (final group
+        in groups) {
+      partMessageIds.addAll(
+        group.partMessageIds,
+      );
+    }
+
+    final parts =
+        package.parts
+            .map(
+              (
+                part,
+              ) =>
+                  <String, dynamic>{
+                ...part.toManifestJson(),
+                'messageId':
+                    partMessageIds[
+                      part.index
+                    ],
+              },
+            )
+            .toList();
+
+    final root =
+        <String, dynamic>{
+      'version':
+          3,
+
+      'kind':
+          'fabularium-storage-package',
+
+      'packageId':
+          package.packageId,
+
+      'createdAt':
+          package.createdAt
+              .toUtc()
+              .toIso8601String(),
+
+      // ========================================================
+      // CATALOG
+      // ========================================================
+
+      'catalog':
+          package.catalog
+                  ?.toManifestJson() ??
+              <String, dynamic>{
+                'name':
+                    package.sourceFolderName,
+              },
+
+      // ========================================================
+      // SOURCE
+      // ========================================================
+
+      'source':
+          <String, dynamic>{
+        'folderName':
+            package.sourceFolderName,
+        'size':
+            package.sourceSize,
+      },
+
+      // ========================================================
+      // ARCHIVE
+      // ========================================================
+
+      'archive':
+          <String, dynamic>{
+        'fileName':
+            package.archiveFileName,
+        'size':
+            package.archiveSize,
+        'sha256':
+            package.archiveSha256,
+        'split':
+            package.isSplit,
+        'partCount':
+            package.partCount,
+      },
+
+      // ========================================================
+      // TELEGRAM
+      // ========================================================
+
+      'telegram':
+          <String, dynamic>{
+        'catalogChannel':
+            <String, dynamic>{
+          'id':
+              journal.catalogChannel.id,
+          'title':
+              journal.catalogChannel.title,
+        },
+
+        'filesChannel':
+            <String, dynamic>{
+          'id':
+              journal.filesChannel.id,
+          'title':
+              journal.filesChannel.title,
+        },
+
+        'gallery':
+            <String, dynamic>{
+          'groupedId':
+              journal.galleryGroupedId,
+          'messageIds':
+              journal.galleryMessageIds,
+        },
+
+        'fileGroups':
+            groups
+                .map(
+                  (
+                    group,
+                  ) =>
+                      <String, dynamic>{
+                    'groupIndex':
+                        group.groupIndex,
+                    'groupedId':
+                        group.groupedId,
+                    'messageIds':
+                        group.messageIds,
+                  },
+                )
+                .toList(),
+      },
+
+      // ========================================================
+      // PARTS
+      // ========================================================
+
+      'parts':
+          parts,
+    };
+
+    final file =
+        File(
+      package.manifestPath,
+    );
+
+    await file.parent.create(
+      recursive:
+          true,
+    );
+
+    final temp =
+        File(
+      '${file.path}.tmp',
+    );
+
+    const encoder =
+        JsonEncoder.withIndent(
+      '  ',
+    );
+
+    await temp.writeAsString(
+      encoder.convert(
+        root,
+      ),
+      flush:
+          true,
+    );
+
+    if (await file.exists()) {
+      await file.delete();
+    }
+
+    await temp.rename(
+      file.path,
+    );
+  }
+
+  // ============================================================
+  // CAPTIONS
   // ============================================================
 
   String _buildGalleryCaption(
@@ -689,13 +1124,11 @@ class TelegramStoragePackageUploader {
     buffer.writeln();
 
     buffer.writeln(
-      'Archive: '
-      '${_formatBytes(package.archiveSize)}',
+      'Archive: ${_formatBytes(package.archiveSize)}',
     );
 
     buffer.writeln(
-      'Parts: '
-      '${package.partCount}',
+      'Parts: ${package.partCount}',
     );
 
     final description =
@@ -722,24 +1155,21 @@ class TelegramStoragePackageUploader {
             .toString()
             .trim();
 
-    return result.length >
-            900
-        ? result.substring(
-            0,
-            900,
-          )
-        : result;
-  }
+    if (result.length <=
+        900) {
+      return result;
+    }
 
-  // ============================================================
-  // FILE CAPTION
-  // ============================================================
+    return result.substring(
+      0,
+      900,
+    );
+  }
 
   String _buildFilesCaption({
     required TelegramStoragePackage package,
     required int groupIndex,
     required int totalGroups,
-    required bool includesManifest,
   }) {
     final buffer =
         StringBuffer();
@@ -756,8 +1186,7 @@ class TelegramStoragePackageUploader {
 
     if (totalGroups > 1) {
       buffer.writeln(
-        'Files '
-        '$groupIndex/$totalGroups',
+        'Files $groupIndex/$totalGroups',
       );
     } else {
       buffer.writeln(
@@ -765,15 +1194,17 @@ class TelegramStoragePackageUploader {
       );
     }
 
-    if (includesManifest) {
-      buffer.writeln(
-        'Includes package manifest',
-      );
-    }
-
     return buffer
         .toString()
         .trim();
+  }
+
+  String _buildManifestCaption(
+    TelegramStoragePackage package,
+  ) {
+    return '[FABULARIUM_MANIFEST:${package.packageId}]\n\n'
+        '📋 ${package.displayName}\n'
+        'Storage Manifest V3';
   }
 
   String _mimeTypeForImage(
@@ -794,594 +1225,10 @@ class TelegramStoragePackageUploader {
   }
 
   // ============================================================
-  // VALIDATE PACKAGE
-  // ============================================================
-
-  Future<void> _validateLocalPackage(
-    TelegramStoragePackage package,
-  ) async {
-    final staging =
-        Directory(
-      package.stagingDirectoryPath,
-    );
-
-    if (!await staging.exists()) {
-      throw const TelegramStoragePackageUploadException(
-        'The package staging folder '
-        'no longer exists.',
-      );
-    }
-
-    for (final part
-        in package.parts) {
-      final file =
-          File(
-        part.filePath,
-      );
-
-      if (!await file.exists()) {
-        throw TelegramStoragePackageUploadException(
-          'Missing storage part: '
-          '${part.fileName}',
-        );
-      }
-
-      final length =
-          await file.length();
-
-      if (length !=
-          part.size) {
-        throw TelegramStoragePackageUploadException(
-          'Storage part size changed: '
-          '${part.fileName}',
-        );
-      }
-    }
-
-    for (final imagePath
-        in package.galleryImagePaths) {
-      final image =
-          File(
-        imagePath,
-      );
-
-      if (!await image.exists()) {
-        throw TelegramStoragePackageUploadException(
-          'Gallery image no longer exists: '
-          '${p.basename(imagePath)}',
-        );
-      }
-    }
-  }
-
-  // ============================================================
-  // RECEIPT PATH
-  // ============================================================
-
-  String _receiptPath(
-    TelegramStoragePackage package,
-  ) {
-    return p.join(
-      package.stagingDirectoryPath,
-      '${package.packageId}.upload.json',
-    );
-  }
-
-  // ============================================================
-  // LOAD RECEIPT
-  // ============================================================
-
-  Future<_UploadReceiptState?>
-      _loadReceipt({
-    required TelegramStoragePackage package,
-    required TelegramStorageChannel channel,
-  }) async {
-    final file =
-        File(
-      _receiptPath(
-        package,
-      ),
-    );
-
-    try {
-      if (!await file.exists()) {
-        return null;
-      }
-
-      final decoded =
-          jsonDecode(
-        await file.readAsString(),
-      );
-
-      if (decoded is! Map) {
-        return null;
-      }
-
-      final root =
-          Map<String, dynamic>.from(
-        decoded,
-      );
-
-      /*
-       * Receipts da versão antiga não são
-       * reutilizados no formato media group.
-       */
-      if (root['version'] != 2 ||
-          root['packageId'] !=
-              package.packageId) {
-        return null;
-      }
-
-      final channelData =
-          root['channel'];
-
-      if (channelData is! Map) {
-        return null;
-      }
-
-      final channelMap =
-          Map<String, dynamic>.from(
-        channelData,
-      );
-
-      final storedChannelId =
-          _readInt(
-        channelMap['id'],
-      );
-
-      if (storedChannelId !=
-          channel.id) {
-        return null;
-      }
-
-      // ========================================================
-      // GALLERY
-      // ========================================================
-
-      _ReceiptGallery? gallery;
-
-      final rawGallery =
-          root['gallery'];
-
-      if (rawGallery is Map) {
-        final map =
-            Map<String, dynamic>.from(
-          rawGallery,
-        );
-
-        gallery =
-            _ReceiptGallery(
-          groupedId:
-              _readInt(
-            map['groupedId'],
-          ),
-          messageIds:
-              _readIntList(
-            map['messageIds'],
-          ),
-        );
-      }
-
-      // ========================================================
-      // FILE GROUPS
-      // ========================================================
-
-      final fileGroups =
-          <int, _ReceiptFileGroup>{};
-
-      final rawGroups =
-          root['fileGroups'];
-
-      if (rawGroups is List) {
-        for (final dynamic rawGroup
-            in rawGroups) {
-          if (rawGroup is! Map) {
-            continue;
-          }
-
-          final map =
-              Map<String, dynamic>.from(
-            rawGroup,
-          );
-
-          final groupIndex =
-              _readInt(
-            map['groupIndex'],
-          );
-
-          if (groupIndex == null) {
-            continue;
-          }
-
-          final partMessageIds =
-              <int, int>{};
-
-          final rawPartIds =
-              map['partMessageIds'];
-
-          if (rawPartIds is Map) {
-            for (final entry
-                in rawPartIds.entries) {
-              final partIndex =
-                  int.tryParse(
-                entry.key
-                    .toString(),
-              );
-
-              final messageId =
-                  _readInt(
-                entry.value,
-              );
-
-              if (partIndex != null &&
-                  messageId != null) {
-                partMessageIds[
-                    partIndex] =
-                    messageId;
-              }
-            }
-          }
-
-          fileGroups[
-              groupIndex] =
-              _ReceiptFileGroup(
-            groupIndex:
-                groupIndex,
-            groupedId:
-                _readInt(
-              map['groupedId'],
-            ),
-            messageIds:
-                _readIntList(
-              map['messageIds'],
-            ),
-            partMessageIds:
-                partMessageIds,
-            manifestMessageId:
-                _readInt(
-              map['manifestMessageId'],
-            ),
-          );
-        }
-      }
-
-      return _UploadReceiptState(
-        packageId:
-            package.packageId,
-        channelId:
-            channel.id,
-        channelTitle:
-            channel.title,
-        gallery:
-            gallery,
-        fileGroups:
-            fileGroups,
-        completed:
-            root['completed'] ==
-                true,
-      );
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // ============================================================
-  // WRITE RECEIPT
-  // ============================================================
-
-  Future<void> _writeReceipt({
-    required TelegramStoragePackage package,
-    required _UploadReceiptState receipt,
-  }) async {
-    final file =
-        File(
-      _receiptPath(
-        package,
-      ),
-    );
-
-    final temp =
-        File(
-      '${file.path}.tmp',
-    );
-
-    final groups =
-        receipt.fileGroups.values
-            .toList()
-          ..sort(
-            (
-              a,
-              b,
-            ) =>
-                a.groupIndex.compareTo(
-              b.groupIndex,
-            ),
-          );
-
-    final encoder =
-        const JsonEncoder.withIndent(
-      '  ',
-    );
-
-    await temp.writeAsString(
-      encoder.convert(
-        <String, dynamic>{
-          'version':
-              2,
-          'kind':
-              'fabularium-storage-upload-receipt',
-          'packageId':
-              receipt.packageId,
-          'updatedAt':
-              DateTime.now()
-                  .toUtc()
-                  .toIso8601String(),
-          'completed':
-              receipt.completed,
-
-          'channel':
-              <String, dynamic>{
-            'id':
-                receipt.channelId,
-            'title':
-                receipt.channelTitle,
-          },
-
-          'gallery':
-              receipt.gallery ==
-                      null
-                  ? null
-                  : <String, dynamic>{
-                      'groupedId':
-                          receipt
-                              .gallery!
-                              .groupedId,
-                      'messageIds':
-                          receipt
-                              .gallery!
-                              .messageIds,
-                    },
-
-          'fileGroups':
-              groups
-                  .map(
-                    (
-                      group,
-                    ) =>
-                        <String, dynamic>{
-                      'groupIndex':
-                          group.groupIndex,
-                      'groupedId':
-                          group.groupedId,
-                      'messageIds':
-                          group.messageIds,
-                      'partMessageIds':
-                          group
-                              .partMessageIds
-                              .map(
-                        (
-                          key,
-                          value,
-                        ) =>
-                            MapEntry<
-                                String,
-                                int>(
-                          key.toString(),
-                          value,
-                        ),
-                      ),
-                      'manifestMessageId':
-                          group
-                              .manifestMessageId,
-                    },
-                  )
-                  .toList(),
-        },
-      ),
-      flush:
-          true,
-    );
-
-    if (await file.exists()) {
-      await file.delete();
-    }
-
-    await temp.rename(
-      file.path,
-    );
-  }
-
-  // ============================================================
-  // GROUP COMPLETE?
-  // ============================================================
-
-  bool _isFileGroupComplete({
-    required _FileGroupPlan plan,
-    required _ReceiptFileGroup?
-        receiptGroup,
-  }) {
-    if (receiptGroup == null) {
-      return false;
-    }
-
-    final int expected =
-        plan.parts.length +
-            (plan.includesManifest
-                ? 1
-                : 0);
-
-    if (receiptGroup.messageIds.length !=
-        expected) {
-      return false;
-    }
-
-    for (final id
-        in receiptGroup.messageIds) {
-      if (id <= 0) {
-        return false;
-      }
-    }
-
-    for (final part
-        in plan.parts) {
-      if (!receiptGroup
-          .partMessageIds
-          .containsKey(
-        part.index,
-      )) {
-        return false;
-      }
-    }
-
-    if (plan.includesManifest &&
-        receiptGroup.manifestMessageId ==
-            null) {
-      return false;
-    }
-
-    return true;
-  }
-
-  // ============================================================
-  // RECEIPT COMPLETE?
-  // ============================================================
-
-  bool _isReceiptComplete({
-    required _UploadReceiptState receipt,
-    required TelegramStoragePackage package,
-    required List<_FileGroupPlan> plans,
-  }) {
-    if (!receipt.completed) {
-      return false;
-    }
-
-    if (package.galleryImagePaths.isNotEmpty) {
-      if (receipt.gallery == null ||
-          receipt
-                  .gallery!
-                  .messageIds
-                  .length !=
-              package
-                  .galleryImagePaths
-                  .length) {
-        return false;
-      }
-    }
-
-    for (final plan
-        in plans) {
-      if (!_isFileGroupComplete(
-        plan:
-            plan,
-        receiptGroup:
-            receipt.fileGroups[
-              plan.groupIndex
-            ],
-      )) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  // ============================================================
-  // BUILD PUBLIC RESULT
-  // ============================================================
-
-  TelegramStoragePackageUploadResult
-      _buildResult({
-    required TelegramStoragePackage package,
-    required TelegramStorageChannel channel,
-    required _UploadReceiptState receipt,
-    required int uploadedPartsNow,
-    required int reusedParts,
-    required bool alreadyUploaded,
-  }) {
-    final partMessageIds =
-        <int, int>{};
-
-    int? manifestMessageId;
-
-    final fileGroupedIds =
-        <int>[];
-
-    final groups =
-        receipt.fileGroups.values
-            .toList()
-          ..sort(
-            (
-              a,
-              b,
-            ) =>
-                a.groupIndex.compareTo(
-              b.groupIndex,
-            ),
-          );
-
-    for (final group
-        in groups) {
-      partMessageIds.addAll(
-        group.partMessageIds,
-      );
-
-      manifestMessageId ??=
-          group.manifestMessageId;
-
-      if (group.groupedId !=
-          null) {
-        fileGroupedIds.add(
-          group.groupedId!,
-        );
-      }
-    }
-
-    if (manifestMessageId ==
-        null) {
-      throw const TelegramStoragePackageUploadException(
-        'Storage upload completed '
-        'without a manifest message ID.',
-      );
-    }
-
-    return TelegramStoragePackageUploadResult(
-      packageId:
-          package.packageId,
-      channelId:
-          channel.id,
-      channelTitle:
-          channel.title,
-      partMessageIds:
-          partMessageIds,
-      manifestMessageId:
-          manifestMessageId,
-      uploadedPartsNow:
-          uploadedPartsNow,
-      reusedParts:
-          reusedParts,
-      alreadyUploaded:
-          alreadyUploaded,
-      receiptPath:
-          _receiptPath(
-        package,
-      ),
-      galleryMessageIds:
-          receipt.gallery
-                  ?.messageIds ??
-              const <int>[],
-      galleryGroupedId:
-          receipt.gallery
-              ?.groupedId,
-      fileGroupedIds:
-          fileGroupedIds,
-    );
-  }
-
-  // ============================================================
   // PROGRESS
   // ============================================================
 
-  double _mapFileProgress(
+  double _mapFilesProgress(
     num bytes,
     int totalBytes,
   ) {
@@ -1389,21 +1236,30 @@ class TelegramStoragePackageUploader {
       return 0.10;
     }
 
+    final ratio =
+        (
+          bytes /
+              totalBytes
+        ).clamp(
+          0.0,
+          1.0,
+        );
+
     /*
-     * 0 - 10%:
-     * gallery
+     * Gallery:
+     * 0% - 10%
      *
-     * 10 - 100%:
-     * package documents
+     * Files:
+     * 10% - 95%
+     *
+     * Manifest:
+     * 95% - 100%
      */
     return 0.10 +
-        ((bytes /
-                    totalBytes)
-                .clamp(
-                  0.0,
-                  1.0,
-                ) *
-            0.90);
+        (
+          ratio *
+              0.85
+        );
   }
 
   void _report(
@@ -1413,6 +1269,8 @@ class TelegramStoragePackageUploader {
     required String stage,
     required int currentPart,
     required int totalParts,
+    required String? currentFileName,
+    required double currentFileProgress,
   }) {
     callback?.call(
       TelegramStoragePackageUploadProgress(
@@ -1430,9 +1288,9 @@ class TelegramStoragePackageUploader {
         totalParts:
             totalParts,
         currentFileName:
-            null,
+            currentFileName,
         currentFileProgress:
-            overallProgress
+            currentFileProgress
                 .clamp(
                   0.0,
                   1.0,
@@ -1443,39 +1301,100 @@ class TelegramStoragePackageUploader {
   }
 
   // ============================================================
-  // JSON HELPERS
+  // RESULT
   // ============================================================
 
-  int? _readInt(
-    dynamic value,
-  ) {
-    if (value is int) {
-      return value;
+  TelegramStoragePackageUploadResult
+      _buildResult({
+    required TelegramStoragePackage package,
+    required TelegramStorageUploadJournal journal,
+    required int uploadedPartsNow,
+    required int reusedParts,
+    required bool alreadyUploaded,
+  }) {
+    final partMessageIds =
+        <int, int>{};
+
+    final fileGroupedIds =
+        <int>[];
+
+    final groups =
+        journal.fileGroups.values
+            .toList()
+          ..sort(
+            (
+              a,
+              b,
+            ) =>
+                a.groupIndex.compareTo(
+              b.groupIndex,
+            ),
+          );
+
+    for (final group
+        in groups) {
+      partMessageIds.addAll(
+        group.partMessageIds,
+      );
+
+      if (group.groupedId !=
+          null) {
+        fileGroupedIds.add(
+          group.groupedId!,
+        );
+      }
     }
 
-    if (value is num) {
-      return value.toInt();
+    final manifestMessageId =
+        journal.manifestMessageId;
+
+    if (manifestMessageId ==
+        null) {
+      throw const TelegramStoragePackageUploadException(
+        'Storage upload completed without a manifest message ID.',
+      );
     }
 
-    return int.tryParse(
-      value?.toString() ??
-          '',
+    return TelegramStoragePackageUploadResult(
+      packageId:
+          package.packageId,
+
+      catalogChannelId:
+          journal.catalogChannel.id,
+
+      catalogChannelTitle:
+          journal.catalogChannel.title,
+
+      filesChannelId:
+          journal.filesChannel.id,
+
+      filesChannelTitle:
+          journal.filesChannel.title,
+
+      partMessageIds:
+          partMessageIds,
+
+      manifestMessageId:
+          manifestMessageId,
+
+      uploadedPartsNow:
+          uploadedPartsNow,
+
+      reusedParts:
+          reusedParts,
+
+      alreadyUploaded:
+          alreadyUploaded,
+
+      galleryMessageIds:
+          journal.galleryMessageIds,
+
+      galleryGroupedId:
+          journal.galleryGroupedId,
+
+      fileGroupedIds:
+          fileGroupedIds,
     );
-  }
-
-  List<int> _readIntList(
-    dynamic value,
-  ) {
-    if (value is! List) {
-      return <int>[];
-    }
-
-    return value
-        .map(
-          _readInt,
-        )
-        .whereType<int>()
-        .toList();
   }
 
   String _formatBytes(
@@ -1496,7 +1415,7 @@ class TelegramStoragePackageUploader {
 }
 
 // ============================================================
-// FILE GROUP PLAN
+// GROUP PLAN
 // ============================================================
 
 class _FileGroupPlan {
@@ -1504,94 +1423,9 @@ class _FileGroupPlan {
 
   final List<TelegramStoragePackagePart> parts;
 
-  final bool includesManifest;
-
   const _FileGroupPlan({
     required this.groupIndex,
     required this.parts,
-    required this.includesManifest,
-  });
-}
-
-// ============================================================
-// RECEIPT STATE
-// ============================================================
-
-class _UploadReceiptState {
-  final String packageId;
-
-  final int channelId;
-
-  final String channelTitle;
-
-  final _ReceiptGallery? gallery;
-
-  final Map<int, _ReceiptFileGroup>
-      fileGroups;
-
-  final bool completed;
-
-  const _UploadReceiptState({
-    required this.packageId,
-    required this.channelId,
-    required this.channelTitle,
-    required this.gallery,
-    required this.fileGroups,
-    required this.completed,
-  });
-
-  _UploadReceiptState copyWith({
-    _ReceiptGallery? gallery,
-    bool? completed,
-  }) {
-    return _UploadReceiptState(
-      packageId:
-          packageId,
-      channelId:
-          channelId,
-      channelTitle:
-          channelTitle,
-      gallery:
-          gallery ??
-          this.gallery,
-      fileGroups:
-          fileGroups,
-      completed:
-          completed ??
-          this.completed,
-    );
-  }
-}
-
-class _ReceiptGallery {
-  final int? groupedId;
-
-  final List<int> messageIds;
-
-  const _ReceiptGallery({
-    required this.groupedId,
-    required this.messageIds,
-  });
-}
-
-class _ReceiptFileGroup {
-  final int groupIndex;
-
-  final int? groupedId;
-
-  final List<int> messageIds;
-
-  final Map<int, int>
-      partMessageIds;
-
-  final int? manifestMessageId;
-
-  const _ReceiptFileGroup({
-    required this.groupIndex,
-    required this.groupedId,
-    required this.messageIds,
-    required this.partMessageIds,
-    required this.manifestMessageId,
   });
 }
 
@@ -1629,12 +1463,15 @@ class TelegramStoragePackageUploadProgress {
 class TelegramStoragePackageUploadResult {
   final String packageId;
 
-  final int channelId;
+  final int catalogChannelId;
 
-  final String channelTitle;
+  final String catalogChannelTitle;
 
-  final Map<int, int>
-      partMessageIds;
+  final int filesChannelId;
+
+  final String filesChannelTitle;
+
+  final Map<int, int> partMessageIds;
 
   final int manifestMessageId;
 
@@ -1644,10 +1481,7 @@ class TelegramStoragePackageUploadResult {
 
   final bool alreadyUploaded;
 
-  final String receiptPath;
-
-  final List<int>
-      galleryMessageIds;
+  final List<int> galleryMessageIds;
 
   final int? galleryGroupedId;
 
@@ -1655,19 +1489,18 @@ class TelegramStoragePackageUploadResult {
 
   const TelegramStoragePackageUploadResult({
     required this.packageId,
-    required this.channelId,
-    required this.channelTitle,
+    required this.catalogChannelId,
+    required this.catalogChannelTitle,
+    required this.filesChannelId,
+    required this.filesChannelTitle,
     required this.partMessageIds,
     required this.manifestMessageId,
     required this.uploadedPartsNow,
     required this.reusedParts,
     required this.alreadyUploaded,
-    required this.receiptPath,
-    this.galleryMessageIds =
-        const <int>[],
-    this.galleryGroupedId,
-    this.fileGroupedIds =
-        const <int>[],
+    required this.galleryMessageIds,
+    required this.galleryGroupedId,
+    required this.fileGroupedIds,
   });
 }
 
