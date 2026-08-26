@@ -60,8 +60,7 @@ class TelegramStorageWorkspaceService {
   // LOAD
   // ============================================================
 
-  Future<TelegramStorageWorkspace>
-      load() async {
+  Future<TelegramStorageWorkspace> load() async {
     final file =
         File(
       _filePath(),
@@ -80,15 +79,11 @@ class TelegramStorageWorkspaceService {
             decoded,
           );
 
-          if (root['version'] ==
-                  1 &&
-              root['workspace']
-                  is Map) {
-            return TelegramStorageWorkspace
-                .fromJson(
+          if (root['version'] == 1 &&
+              root['workspace'] is Map) {
+            return TelegramStorageWorkspace.fromJson(
               Map<String, dynamic>.from(
-                root['workspace']
-                    as Map,
+                root['workspace'] as Map,
               ),
             );
           }
@@ -110,10 +105,8 @@ class TelegramStorageWorkspaceService {
     if (legacyChannel != null) {
       final migrated =
           TelegramStorageWorkspace(
-        catalogChannel:
-            null,
-        filesChannel:
-            legacyChannel,
+        catalogChannel: null,
+        filesChannel: legacyChannel,
       );
 
       await save(
@@ -146,8 +139,7 @@ class TelegramStorageWorkspaceService {
     );
 
     await file.parent.create(
-      recursive:
-          true,
+      recursive: true,
     );
 
     final temp =
@@ -163,16 +155,14 @@ class TelegramStorageWorkspaceService {
     await temp.writeAsString(
       encoder.convert(
         <String, dynamic>{
-          'version':
-              1,
+          'version': 1,
           'kind':
               'fabularium-storage-workspace',
           'workspace':
               workspace.toJson(),
         },
       ),
-      flush:
-          true,
+      flush: true,
     );
 
     if (await file.exists()) {
@@ -185,21 +175,48 @@ class TelegramStorageWorkspaceService {
   }
 
   // ============================================================
+  // LEGACY FILES CHANNEL COMPATIBILITY
+  // ============================================================
+
+  Future<void> _syncLegacyFilesChannel(
+    TelegramStorageChannel? filesChannel,
+  ) async {
+    /*
+     * storage_channel.json pertence ao Storage V1/V2.
+     *
+     * Enquanto ainda existirem pontos antigos do app que
+     * consultem esse arquivo, ele deve representar SOMENTE
+     * o Files Channel.
+     *
+     * createStorageChannel() salva automaticamente o canal
+     * criado nesse arquivo. Isso significa que criar o
+     * Catalog Channel poderia fazer o legado apontar para o
+     * canal errado se não corrigíssemos aqui.
+     */
+    if (filesChannel == null) {
+      await _storage.clearChannel();
+      return;
+    }
+
+    await _storage.selectExistingChannel(
+      filesChannel,
+    );
+  }
+
+  // ============================================================
   // AVAILABLE CHANNELS
   // ============================================================
 
   Future<List<TelegramStorageChannel>>
       listAvailableChannels() {
-    return _storage
-        .listAvailableChannels();
+    return _storage.listAvailableChannels();
   }
 
   // ============================================================
   // SELECT CATALOG
   // ============================================================
 
-  Future<TelegramStorageWorkspace>
-      selectCatalogChannel(
+  Future<TelegramStorageWorkspace> selectCatalogChannel(
     TelegramStorageChannel channel,
   ) async {
     final current =
@@ -215,12 +232,15 @@ class TelegramStorageWorkspaceService {
 
     final updated =
         current.copyWith(
-      catalogChannel:
-          channel,
+      catalogChannel: channel,
     );
 
     await save(
       updated,
+    );
+
+    await _syncLegacyFilesChannel(
+      updated.filesChannel,
     );
 
     return updated;
@@ -230,8 +250,7 @@ class TelegramStorageWorkspaceService {
   // SELECT FILES
   // ============================================================
 
-  Future<TelegramStorageWorkspace>
-      selectFilesChannel(
+  Future<TelegramStorageWorkspace> selectFilesChannel(
     TelegramStorageChannel channel,
   ) async {
     final current =
@@ -247,12 +266,15 @@ class TelegramStorageWorkspaceService {
 
     final updated =
         current.copyWith(
-      filesChannel:
-          channel,
+      filesChannel: channel,
     );
 
     await save(
       updated,
+    );
+
+    await _syncLegacyFilesChannel(
+      updated.filesChannel,
     );
 
     return updated;
@@ -265,8 +287,7 @@ class TelegramStorageWorkspaceService {
   Future<TelegramStorageWorkspace>
       createCatalogChannel() async {
     final channel =
-        await _storage
-            .createStorageChannel(
+        await _storage.createStorageChannel(
       title:
           defaultCatalogChannelTitle,
       about:
@@ -285,8 +306,7 @@ class TelegramStorageWorkspaceService {
   Future<TelegramStorageWorkspace>
       createFilesChannel() async {
     final channel =
-        await _storage
-            .createStorageChannel(
+        await _storage.createStorageChannel(
       title:
           defaultFilesChannelTitle,
       about:
@@ -309,12 +329,15 @@ class TelegramStorageWorkspaceService {
 
     final updated =
         current.copyWith(
-      clearCatalogChannel:
-          true,
+      clearCatalogChannel: true,
     );
 
     await save(
       updated,
+    );
+
+    await _syncLegacyFilesChannel(
+      updated.filesChannel,
     );
 
     return updated;
@@ -331,12 +354,15 @@ class TelegramStorageWorkspaceService {
 
     final updated =
         current.copyWith(
-      clearFilesChannel:
-          true,
+      clearFilesChannel: true,
     );
 
     await save(
       updated,
+    );
+
+    await _syncLegacyFilesChannel(
+      updated.filesChannel,
     );
 
     return updated;
@@ -357,8 +383,7 @@ class TelegramStorageWorkspaceService {
       '${file.path}.tmp',
     );
 
-    for (final candidate
-        in <File>[
+    for (final candidate in <File>[
       file,
       temp,
     ]) {
@@ -368,6 +393,8 @@ class TelegramStorageWorkspaceService {
         }
       } catch (_) {}
     }
+
+    await _storage.clearChannel();
   }
 }
 
