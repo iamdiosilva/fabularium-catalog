@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../../models/catalog_model.dart';
 import '../../../../pages/model_detail_page.dart';
 import '../../../../pages/pending_models_page.dart';
+import '../../../../pages/telegram_catalog_page.dart';
 import '../../../../pages/telegram_login_page.dart';
 import '../../application/catalog_controller.dart';
 import '../widgets/catalog_model_card.dart';
@@ -175,6 +176,22 @@ class _CatalogPageState
                     : _refreshTelegramStatuses,
             icon: const Icon(
               Icons.cloud_sync_outlined,
+            ),
+          ),
+          IconButton(
+            tooltip: 'Telegram Catalog',
+            onPressed: () {
+              Navigator.of(
+                context,
+              ).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      const TelegramCatalogPage(),
+                ),
+              );
+            },
+            icon: const Icon(
+              Icons.cloud_outlined,
             ),
           ),
           IconButton(

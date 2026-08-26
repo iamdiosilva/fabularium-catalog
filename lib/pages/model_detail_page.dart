@@ -55,6 +55,7 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
   TelegramStorageModelStatus? _status;
   String _modelId = '';
   bool _loadingStatus = true;
+  bool _hasLoadedStorageState = false;
   bool _busy = false;
   bool _verified = false;
   bool _verificationUnavailable = false;
@@ -75,12 +76,10 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
       setState(() {
         _loadingStatus = true;
         _error = null;
-        _verified = false;
-        _verificationUnavailable = false;
 
-        // A manual refresh starts a fresh status cycle. During an upload,
-        // however, keep the current stage because _upload() calls this
-        // method before its finally block releases _busy.
+        // Keep the last known Telegram state while refreshing.
+        // This prevents the UI from briefly falling back to an empty
+        // workspace and showing actions such as Configure Storage.
         if (!_busy) {
           _stage = '';
           _progress = 0;
@@ -96,13 +95,16 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
         modelId: modelId,
       );
 
+      var verified = false;
+      var verificationUnavailable = false;
+
       if (status.journal?.isStored == true) {
         try {
           final result = await _verification.verifyAndUpdate(
             journal: status.journal!,
           );
 
-          _verified = result.allPresent;
+          verified = result.allPresent;
 
           if (!result.allPresent) {
             status = await _registry.getStatus(
@@ -111,7 +113,7 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
             );
           }
         } catch (_) {
-          _verificationUnavailable = true;
+          verificationUnavailable = true;
         }
       }
 
@@ -123,7 +125,10 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
         _workspace = workspace;
         _modelId = modelId;
         _status = status;
+        _verified = verified;
+        _verificationUnavailable = verificationUnavailable;
         _loadingStatus = false;
+        _hasLoadedStorageState = true;
       });
     } catch (e) {
       if (mounted) {
@@ -420,7 +425,7 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
         actions: [
           IconButton(
             tooltip: 'Refresh Storage Status',
-            onPressed: _busy ? null : _loadStatus,
+            onPressed: _busy || _loadingStatus ? null : _loadStatus,
             icon: const Icon(Icons.cloud_sync_outlined),
           ),
           IconButton(
@@ -433,7 +438,7 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
           ),
           IconButton(
             tooltip: 'Edit Model',
-            onPressed: _busy ? null : _edit,
+            onPressed: _busy || _loadingStatus ? null : _edit,
             icon: const Icon(Icons.edit_outlined),
           ),
         ],
@@ -593,8 +598,8 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
   }
 
   String get _statusLabel {
-    if (_loadingStatus) {
-      return 'CHECKING';
+    if (_loadingStatus && !_hasLoadedStorageState) {
+      return 'LOADING';
     }
 
     if (_busy) {
@@ -623,6 +628,16 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
   }
 
   Widget _storageCard() {
+    if (!_hasLoadedStorageState) {
+      if (_loadingStatus) {
+        return _buildStorageLoadingCard();
+      }
+
+      if (_error != null) {
+        return _buildStorageLoadErrorCard();
+      }
+    }
+
     final journal = _status?.journal;
 
     return Card(
@@ -641,6 +656,16 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),
+                if (_loadingStatus && _hasLoadedStorageState) ...[
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 Chip(
                   label: Text(_statusLabel),
                 ),
@@ -699,7 +724,7 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
               children: [
                 if (!_workspace.isFullyConfigured)
                   FilledButton.tonalIcon(
-                    onPressed: _busy
+                    onPressed: _busy || _loadingStatus
                         ? null
                         : () async {
                             await Navigator.of(context).push(
@@ -715,13 +740,13 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
                   )
                 else if (journal == null)
                   FilledButton.icon(
-                    onPressed: _busy ? null : _upload,
+                    onPressed: _busy || _loadingStatus ? null : _upload,
                     icon: const Icon(Icons.cloud_upload_outlined),
                     label: const Text('Upload to Telegram'),
                   )
                 else if (!journal.isStored)
                   FilledButton.tonalIcon(
-                    onPressed: _busy ? null : _openRecovery,
+                    onPressed: _busy || _loadingStatus ? null : _openRecovery,
                     icon: const Icon(Icons.restore_outlined),
                     label: const Text('Open Recovery'),
                   )
@@ -734,11 +759,87 @@ class _ModelDetailsPageState extends State<ModelDetailsPage> {
                     label: Text('Stored in Telegram'),
                   ),
                 OutlinedButton.icon(
-                  onPressed: _busy ? null : _loadStatus,
+                  onPressed: _busy || _loadingStatus ? null : _loadStatus,
                   icon: const Icon(Icons.refresh),
                   label: const Text('Refresh Status'),
                 ),
               ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStorageLoadingCard() {
+    return const Card(
+      child: Padding(
+        padding: EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.cloud_outlined),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Telegram Storage',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: 14),
+            Text('Loading Telegram Storage...'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStorageLoadErrorCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.cloud_off_outlined),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Telegram Storage',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _error ?? 'Could not load Telegram Storage status.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.error,
+              ),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _loadingStatus ? null : _loadStatus,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry'),
             ),
           ],
         ),
