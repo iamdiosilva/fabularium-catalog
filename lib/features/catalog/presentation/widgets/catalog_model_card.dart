@@ -24,8 +24,13 @@ class CatalogModelCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    final preview = model.images.isNotEmpty ? model.images.first : null;
+  Widget build(
+    BuildContext context,
+  ) {
+    final preview =
+        model.images.isNotEmpty
+            ? model.images.first
+            : null;
 
     return Card(
       clipBehavior: Clip.antiAlias,
@@ -33,7 +38,8 @@ class CatalogModelCard extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+          crossAxisAlignment:
+              CrossAxisAlignment.stretch,
           children: [
             Expanded(
               child: Stack(
@@ -44,13 +50,25 @@ class CatalogModelCard extends StatelessWidget {
                       preview,
                       fit: BoxFit.cover,
                       cacheWidth: 600,
-                      errorBuilder: (context, error, stackTrace) => const Center(
-                        child: Icon(Icons.broken_image_outlined, size: 48),
+                      errorBuilder:
+                          (
+                        context,
+                        error,
+                        stackTrace,
+                      ) =>
+                              const Center(
+                        child: Icon(
+                          Icons.broken_image_outlined,
+                          size: 48,
+                        ),
                       ),
                     )
                   else
                     const Center(
-                      child: Icon(Icons.image_outlined, size: 48),
+                      child: Icon(
+                        Icons.image_outlined,
+                        size: 48,
+                      ),
                     ),
                   if (telegramStatus != null)
                     Positioned(
@@ -64,9 +82,12 @@ class CatalogModelCard extends StatelessWidget {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(
+                12,
+              ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment:
+                    CrossAxisAlignment.start,
                 children: [
                   Text(
                     model.name,
@@ -78,27 +99,37 @@ class CatalogModelCard extends StatelessWidget {
                     ),
                   ),
                   if (showStudio) ...[
-                    const SizedBox(height: 4),
+                    const SizedBox(
+                      height: 4,
+                    ),
                     Row(
                       children: [
                         Icon(
                           Icons.business_outlined,
                           size: 14,
-                          color: Theme.of(context).colorScheme.primary,
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.primary,
                         ),
-                        const SizedBox(width: 4),
+                        const SizedBox(
+                          width: 4,
+                        ),
                         Expanded(
                           child: Text(
                             studioName,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall,
+                            style: Theme.of(
+                              context,
+                            ).textTheme.bodySmall,
                           ),
                         ),
                       ],
                     ),
                   ],
-                  const SizedBox(height: 6),
+                  const SizedBox(
+                    height: 6,
+                  ),
                   if (model.category.isNotEmpty)
                     Text(
                       model.category,
@@ -106,36 +137,71 @@ class CatalogModelCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                   if (model.type.isNotEmpty) ...[
-                    const SizedBox(height: 4),
+                    const SizedBox(
+                      height: 4,
+                    ),
                     Text(
-                      _getTypeLabel(model.type),
-                      style: Theme.of(context).textTheme.bodySmall,
+                      _getTypeLabel(
+                        model.type,
+                      ),
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall,
                     ),
                   ],
-                  const SizedBox(height: 8),
+                  const SizedBox(
+                    height: 8,
+                  ),
                   Row(
                     children: [
-                      const Icon(Icons.photo_library_outlined, size: 16),
-                      const SizedBox(width: 4),
-                      Text('${model.images.length}'),
-                      const SizedBox(width: 12),
-                      const Icon(Icons.archive_outlined, size: 16),
-                      const SizedBox(width: 4),
-                      Text('${model.archiveFiles.length}'),
+                      const Icon(
+                        Icons.photo_library_outlined,
+                        size: 16,
+                      ),
+                      const SizedBox(
+                        width: 4,
+                      ),
+                      Text(
+                        '${model.images.length}',
+                      ),
+                      const SizedBox(
+                        width: 12,
+                      ),
+                      const Icon(
+                        Icons.archive_outlined,
+                        size: 16,
+                      ),
+                      const SizedBox(
+                        width: 4,
+                      ),
+                      Text(
+                        '${model.archiveFiles.length}',
+                      ),
                     ],
                   ),
                   if (telegramStatus != null) ...[
-                    const SizedBox(height: 8),
-                    _TelegramStatusLine(status: telegramStatus!),
+                    const SizedBox(
+                      height: 9,
+                    ),
+                    _TelegramStatusLine(
+                      status: telegramStatus!,
+                    ),
                   ],
-                  if (actionLabel != null && onTap != null) ...[
-                    const SizedBox(height: 12),
+                  if (actionLabel != null &&
+                      onTap != null) ...[
+                    const SizedBox(
+                      height: 12,
+                    ),
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton.tonalIcon(
                         onPressed: onTap,
-                        icon: Icon(actionIcon),
-                        label: Text(actionLabel!),
+                        icon: Icon(
+                          actionIcon,
+                        ),
+                        label: Text(
+                          actionLabel!,
+                        ),
                       ),
                     ),
                   ],
@@ -148,7 +214,9 @@ class CatalogModelCard extends StatelessWidget {
     );
   }
 
-  String _getTypeLabel(String type) {
+  String _getTypeLabel(
+    String type,
+  ) {
     switch (type.toLowerCase()) {
       case 'statue':
         return 'Statue';
@@ -164,67 +232,112 @@ class CatalogModelCard extends StatelessWidget {
   }
 }
 
-class _TelegramStatusBadge extends StatelessWidget {
+class _TelegramStatusBadge
+    extends StatelessWidget {
   final CatalogTelegramStatus status;
 
-  const _TelegramStatusBadge({required this.status});
+  const _TelegramStatusBadge({
+    required this.status,
+  });
 
   @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final (icon, foreground, background) = switch (status.state) {
+  Widget build(
+    BuildContext context,
+  ) {
+    final colorScheme = Theme.of(
+      context,
+    ).colorScheme;
+
+    final (
+      icon,
+      foreground,
+      background,
+      label,
+    ) = switch (status.state) {
       CatalogTelegramSyncState.uploaded => (
-          Icons.cloud_done_outlined,
+          Icons.verified_outlined,
           colorScheme.onPrimaryContainer,
           colorScheme.primaryContainer,
+          status.remoteVerified
+              ? 'Verified'
+              : 'Uploaded',
         ),
-      CatalogTelegramSyncState.remoteMissing ||
-      CatalogTelegramSyncState.failed => (
+      CatalogTelegramSyncState.remoteMissing => (
           Icons.cloud_off_outlined,
           colorScheme.onErrorContainer,
           colorScheme.errorContainer,
+          'Incomplete',
         ),
-      CatalogTelegramSyncState.uploading ||
-      CatalogTelegramSyncState.preparing ||
-      CatalogTelegramSyncState.removing => (
-          Icons.cloud_sync_outlined,
+      CatalogTelegramSyncState.failed => (
+          Icons.error_outline,
+          colorScheme.onErrorContainer,
+          colorScheme.errorContainer,
+          'Failed',
+        ),
+      CatalogTelegramSyncState.uploading => (
+          Icons.cloud_upload_outlined,
           colorScheme.onSecondaryContainer,
           colorScheme.secondaryContainer,
+          'Uploading',
+        ),
+      CatalogTelegramSyncState.preparing => (
+          Icons.inventory_2_outlined,
+          colorScheme.onSecondaryContainer,
+          colorScheme.secondaryContainer,
+          'Preparing',
+        ),
+      CatalogTelegramSyncState.removing => (
+          Icons.delete_sweep_outlined,
+          colorScheme.onSecondaryContainer,
+          colorScheme.secondaryContainer,
+          'Removing',
         ),
       CatalogTelegramSyncState.verificationUnavailable => (
           Icons.cloud_queue_outlined,
           colorScheme.onTertiaryContainer,
           colorScheme.tertiaryContainer,
+          'Unchecked',
         ),
       CatalogTelegramSyncState.checking => (
           Icons.sync,
           colorScheme.onSurfaceVariant,
           colorScheme.surfaceContainerHighest,
+          'Checking',
         ),
       CatalogTelegramSyncState.notUploaded => (
           Icons.cloud_off_outlined,
           colorScheme.onSurfaceVariant,
           colorScheme.surfaceContainerHighest,
+          'Not uploaded',
         ),
     };
 
     return Tooltip(
       message: status.detail ?? status.label,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 8,
+          vertical: 6,
+        ),
         decoration: BoxDecoration(
           color: background,
-          borderRadius: BorderRadius.circular(999),
+          borderRadius: BorderRadius.circular(
+            999,
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 16, color: foreground),
-            const SizedBox(width: 5),
+            Icon(
+              icon,
+              size: 16,
+              color: foreground,
+            ),
+            const SizedBox(
+              width: 5,
+            ),
             Text(
-              status.state == CatalogTelegramSyncState.uploaded
-                  ? 'Telegram'
-                  : status.label,
+              label,
               style: TextStyle(
                 color: foreground,
                 fontSize: 11,
@@ -238,37 +351,70 @@ class _TelegramStatusBadge extends StatelessWidget {
   }
 }
 
-class _TelegramStatusLine extends StatelessWidget {
+class _TelegramStatusLine
+    extends StatelessWidget {
   final CatalogTelegramStatus status;
 
-  const _TelegramStatusLine({required this.status});
+  const _TelegramStatusLine({
+    required this.status,
+  });
 
   @override
-  Widget build(BuildContext context) {
-    final isError = status.state == CatalogTelegramSyncState.failed ||
-        status.state == CatalogTelegramSyncState.remoteMissing;
+  Widget build(
+    BuildContext context,
+  ) {
+    final isError =
+        status.state ==
+                CatalogTelegramSyncState.failed ||
+            status.state ==
+                CatalogTelegramSyncState.remoteMissing;
+
+    final isChecking =
+        status.state ==
+            CatalogTelegramSyncState.checking;
 
     return Row(
       children: [
-        Icon(
-          status.isUploaded
-              ? Icons.cloud_done_outlined
-              : isError
-                  ? Icons.warning_amber_rounded
-                  : status.isBusy
-                      ? Icons.sync
-                      : Icons.cloud_off_outlined,
-          size: 15,
-          color: isError ? Theme.of(context).colorScheme.error : null,
+        if (isChecking)
+          const SizedBox(
+            width: 15,
+            height: 15,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+            ),
+          )
+        else
+          Icon(
+            status.isUploaded
+                ? Icons.cloud_done_outlined
+                : isError
+                    ? Icons.warning_amber_rounded
+                    : status.isBusy
+                        ? Icons.sync
+                        : Icons.cloud_off_outlined,
+            size: 15,
+            color: isError
+                ? Theme.of(
+                    context,
+                  ).colorScheme.error
+                : null,
+          ),
+        const SizedBox(
+          width: 5,
         ),
-        const SizedBox(width: 5),
         Expanded(
           child: Text(
             status.label,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: isError ? Theme.of(context).colorScheme.error : null,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(
+                  color: isError
+                      ? Theme.of(
+                          context,
+                        ).colorScheme.error
+                      : null,
                   fontWeight: FontWeight.w600,
                 ),
           ),
