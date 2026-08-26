@@ -8,6 +8,7 @@ import 'package:t/t.dart' as t;
 
 import '../models/telegram_storage_channel.dart';
 import 'telegram_client.dart';
+import 'telegram_storage_upload_connection_pool.dart';
 
 enum TelegramStorageMediaKind {
   photo,
@@ -411,6 +412,9 @@ Future<void>
   final telegramClient =
       TelegramClient.instance;
 
+  TelegramStorageUploadConnectionPool?
+      uploadPool;
+
   try {
     final client =
         await telegramClient.connect();
@@ -447,6 +451,9 @@ Future<void>
     int totalBytes =
         0;
 
+    bool hasLargeFile =
+        false;
+
     for (final item
         in items) {
       final file =
@@ -455,8 +462,19 @@ Future<void>
             as String,
       );
 
-      totalBytes +=
+      final length =
           await file.length();
+
+      totalBytes +=
+          length;
+
+      if (length >=
+          10 *
+              1024 *
+              1024) {
+        hasLargeFile =
+            true;
+      }
     }
 
     if (totalBytes <=
@@ -464,6 +482,82 @@ Future<void>
       throw Exception(
         'Media group contains no data.',
       );
+    }
+
+    final uploadClients =
+        <dynamic>[
+      client,
+    ];
+
+    int uploadSocketCount =
+        1;
+
+    /*
+     * Arquivos grandes tentam usar quatro sessões
+     * MTProto independentes.
+     *
+     * Se o pool não puder ser aberto, mantemos o
+     * comportamento V1: quatro requests concorrentes
+     * sobre a conexão principal. Assim performance V2
+     * nunca transforma um problema do pool em falha do
+     * package inteiro.
+     */
+    if (hasLargeFile) {
+      uploadClients
+        ..clear()
+        ..addAll(
+          List<dynamic>.filled(
+            4,
+            client,
+          ),
+        );
+
+      _sendProgress(
+        eventPort,
+        0,
+        'Opening 4 Telegram upload connections...',
+      );
+
+      uploadPool =
+          TelegramStorageUploadConnectionPool(
+        telegramClient:
+            telegramClient,
+      );
+
+      try {
+        await uploadPool.open(
+          size:
+              4,
+        );
+
+        uploadClients
+          ..clear()
+          ..addAll(
+            uploadPool.clients,
+          );
+
+        uploadSocketCount =
+            uploadPool.size;
+
+        _sendProgress(
+          eventPort,
+          0,
+          '$uploadSocketCount Telegram upload connections ready.',
+        );
+      } catch (_) {
+        try {
+          await uploadPool?.close();
+        } catch (_) {}
+
+        uploadPool =
+            null;
+
+        _sendProgress(
+          eventPort,
+          0,
+          'Parallel sockets unavailable. Using V1 upload mode.',
+        );
+      }
     }
 
     int completedBytes =
@@ -533,8 +627,8 @@ Future<void>
 
       final inputFile =
           await _uploadInputFile(
-        client:
-            client,
+        uploadClients:
+            uploadClients,
         file:
             file,
         fileName:
@@ -558,12 +652,19 @@ Future<void>
             transferWatch.elapsed,
           );
 
+          final connectionLabel =
+              uploadSocketCount >
+                      1
+                  ? ' • $uploadSocketCount connections'
+                  : '';
+
           _sendProgress(
             eventPort,
             overall,
             'Uploading '
             '${index + 1}/${items.length}: '
             '$fileName'
+            '$connectionLabel'
             '${rate == null ? '' : ' • $rate'}',
           );
         },
@@ -824,6 +925,10 @@ Future<void>
     );
   } finally {
     try {
+      await uploadPool?.close();
+    } catch (_) {}
+
+    try {
       await telegramClient.disconnect();
     } catch (_) {}
   }
@@ -831,7 +936,7 @@ Future<void>
 
 Future<t.InputFileBase>
     _uploadInputFile({
-  required dynamic client,
+  required List<dynamic> uploadClients,
   required File file,
   required String fileName,
   required void Function(
@@ -861,14 +966,27 @@ Future<t.InputFileBase>
       512 *
       1024;
 
+  if (uploadClients.isEmpty) {
+    throw Exception(
+      'No Telegram upload connections are available.',
+    );
+  }
+
   /*
-   * Conservative first tuning.
+   * One part per independent MTProto connection.
    *
-   * 4 x 512 KB = about 2 MB of in-flight file
-   * data plus MTProto overhead.
+   * With the V2 pool this normally means:
+   *
+   *   4 sockets x 512 KB
+   *
+   * instead of four invokes competing on the
+   * same tg.Client/socket.
    */
-  const int maxConcurrentParts =
-      4;
+  final int maxConcurrentParts =
+      min<int>(
+    4,
+    uploadClients.length,
+  );
 
   final int totalParts =
       (
@@ -947,10 +1065,16 @@ Future<t.InputFileBase>
         final byteCount =
             bytes.length;
 
+        final uploadClient =
+            uploadClients[
+              partIndex %
+                  uploadClients.length
+            ];
+
         final operation =
             _saveFilePart(
           client:
-              client,
+              uploadClient,
           isBig:
               isBig,
           fileId:
