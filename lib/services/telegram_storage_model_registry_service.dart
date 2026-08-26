@@ -8,6 +8,8 @@ import '../models/telegram_storage_upload_journal.dart';
 import 'telegram_storage_upload_journal_service.dart';
 
 class TelegramStorageModelLink {
+  final String modelId;
+
   final String folderPath;
 
   final String modelName;
@@ -21,6 +23,7 @@ class TelegramStorageModelLink {
   final DateTime updatedAt;
 
   const TelegramStorageModelLink({
+    required this.modelId,
     required this.folderPath,
     required this.modelName,
     required this.studioName,
@@ -30,12 +33,16 @@ class TelegramStorageModelLink {
   });
 
   TelegramStorageModelLink copyWith({
+    String? modelId,
     String? folderPath,
     String? modelName,
     String? studioName,
     String? packageId,
   }) {
     return TelegramStorageModelLink(
+      modelId:
+          modelId ??
+          this.modelId,
       folderPath:
           folderPath ??
           this.folderPath,
@@ -57,6 +64,8 @@ class TelegramStorageModelLink {
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
+      'modelId':
+          modelId,
       'folderPath':
           folderPath,
       'modelName':
@@ -83,6 +92,11 @@ class TelegramStorageModelLink {
         DateTime.now();
 
     return TelegramStorageModelLink(
+      modelId:
+          json['modelId']
+                  ?.toString()
+                  .trim() ??
+              '',
       folderPath:
           json['folderPath']
                   ?.toString() ??
@@ -120,35 +134,42 @@ class TelegramStorageModelLink {
 class TelegramStorageModelStatus {
   final bool localAvailable;
 
+  final String modelId;
+
   final TelegramStorageModelLink? link;
 
   final TelegramStorageUploadJournal? journal;
 
   const TelegramStorageModelStatus({
     required this.localAvailable,
+    required this.modelId,
     required this.link,
     required this.journal,
   });
 
   bool get isLinked =>
-      link != null;
+      link !=
+      null;
 
   bool get hasJournal =>
-      journal != null;
+      journal !=
+      null;
 
   bool get isStored =>
       journal?.isStored ??
       false;
 
   bool get isIncomplete =>
-      journal != null &&
+      journal !=
+          null &&
       !journal!.isStored;
 
   String get telegramStatusLabel {
     final value =
         journal?.status;
 
-    if (value == null) {
+    if (value ==
+        null) {
       return 'NOT STORED';
     }
 
@@ -182,7 +203,8 @@ class TelegramStorageModelRegistryService {
             'LOCALAPPDATA'];
 
     final basePath =
-        localAppData != null &&
+        localAppData !=
+                    null &&
                 localAppData.isNotEmpty
             ? localAppData
             : Directory.systemTemp.path;
@@ -229,10 +251,18 @@ class TelegramStorageModelRegistryService {
         decoded,
       );
 
-      if (root['version'] !=
-              1 ||
-          root['kind'] !=
-              'fabularium-storage-model-registry') {
+      if (root['kind'] !=
+          'fabularium-storage-model-registry') {
+        return <TelegramStorageModelLink>[];
+      }
+
+      final version =
+          root['version'];
+
+      if (version !=
+              1 &&
+          version !=
+              2) {
         return <TelegramStorageModelLink>[];
       }
 
@@ -325,7 +355,7 @@ class TelegramStorageModelRegistryService {
       encoder.convert(
         <String, dynamic>{
           'version':
-              1,
+              2,
           'kind':
               'fabularium-storage-model-registry',
           'links':
@@ -355,26 +385,54 @@ class TelegramStorageModelRegistryService {
   Future<TelegramStorageModelLink>
       linkPackage({
     required CatalogModel model,
+    required String modelId,
     required String packageId,
   }) async {
+    final normalizedModelId =
+        modelId.trim();
+
+    if (normalizedModelId.isEmpty) {
+      throw const TelegramStorageModelRegistryException(
+        'A modelId is required before linking a Telegram package.',
+      );
+    }
+
     final links =
         await _loadLinks();
 
-    final normalized =
+    final normalizedPath =
         _normalizePath(
       model.folderPath,
     );
 
-    final existingIndex =
+    int existingIndex =
         links.indexWhere(
       (
         item,
       ) =>
-          _normalizePath(
-            item.folderPath,
-          ) ==
-          normalized,
+          item.modelId ==
+          normalizedModelId,
     );
+
+    /*
+     * Registry V1 migration:
+     * old links had no modelId, so fall back
+     * to folderPath exactly once.
+     */
+    if (existingIndex <
+        0) {
+      existingIndex =
+          links.indexWhere(
+        (
+          item,
+        ) =>
+            item.modelId.isEmpty &&
+            _normalizePath(
+                  item.folderPath,
+                ) ==
+                normalizedPath,
+      );
+    }
 
     TelegramStorageModelLink link;
 
@@ -384,6 +442,8 @@ class TelegramStorageModelRegistryService {
           links[
                   existingIndex]
               .copyWith(
+        modelId:
+            normalizedModelId,
         folderPath:
             model.folderPath,
         modelName:
@@ -403,6 +463,8 @@ class TelegramStorageModelRegistryService {
 
       link =
           TelegramStorageModelLink(
+        modelId:
+            normalizedModelId,
         folderPath:
             model.folderPath,
         modelName:
@@ -457,9 +519,13 @@ class TelegramStorageModelRegistryService {
   }
 
   Future<TelegramStorageModelStatus>
-      getStatus(
-    CatalogModel model,
-  ) async {
+      getStatus({
+    required CatalogModel model,
+    required String modelId,
+  }) async {
+    final normalizedModelId =
+        modelId.trim();
+
     final localAvailable =
         await Directory(
       model.folderPath,
@@ -468,7 +534,7 @@ class TelegramStorageModelRegistryService {
     final links =
         await _loadLinks();
 
-    final normalized =
+    final normalizedPath =
         _normalizePath(
       model.folderPath,
     );
@@ -477,10 +543,9 @@ class TelegramStorageModelRegistryService {
 
     for (final item
         in links) {
-      if (_normalizePath(
-            item.folderPath,
-          ) ==
-          normalized) {
+      if (normalizedModelId.isNotEmpty &&
+          item.modelId ==
+              normalizedModelId) {
         link =
             item;
 
@@ -488,7 +553,63 @@ class TelegramStorageModelRegistryService {
       }
     }
 
-    if (link != null) {
+    /*
+     * Migrate old registry entries that only
+     * knew folderPath.
+     */
+    if (link ==
+        null) {
+      for (final item
+          in links) {
+        if (_normalizePath(
+              item.folderPath,
+            ) ==
+            normalizedPath) {
+          link =
+              item;
+
+          break;
+        }
+      }
+    }
+
+    if (link !=
+        null) {
+      if (link.modelId !=
+              normalizedModelId ||
+          _normalizePath(
+                link.folderPath,
+              ) !=
+              normalizedPath) {
+        final index =
+            links.indexOf(
+          link,
+        );
+
+        final updated =
+            link.copyWith(
+          modelId:
+              normalizedModelId,
+          folderPath:
+              model.folderPath,
+          modelName:
+              model.name,
+          studioName:
+              model.studio,
+        );
+
+        links[
+            index] =
+            updated;
+
+        link =
+            updated;
+
+        await _saveLinks(
+          links,
+        );
+      }
+
       final journal =
           await _journalService.load(
         link.packageId,
@@ -499,6 +620,8 @@ class TelegramStorageModelRegistryService {
         return TelegramStorageModelStatus(
           localAvailable:
               localAvailable,
+          modelId:
+              normalizedModelId,
           link:
               link,
           journal:
@@ -507,30 +630,20 @@ class TelegramStorageModelRegistryService {
       }
 
       /*
-       * O journal não existe mais.
-       *
-       * Isso normalmente significa que Clean
-       * terminou e removeu o journal.
-       *
-       * Removemos o vínculo obsoleto
-       * automaticamente.
+       * Clean removes the journal.
+       * Remove stale registry mapping too.
        */
       await unlinkPackage(
         link.packageId,
       );
     }
 
-    /*
-     * Migração para uploads criados antes
-     * do registry.
-     *
-     * Enquanto o staging/recovery descriptor
-     * existir, conseguimos recuperar a relação
-     * pelo sourceFolderPath.
-     */
     final recovered =
         await _recoverFromJournals(
-      model,
+      model:
+          model,
+      modelId:
+          normalizedModelId,
     );
 
     if (recovered !=
@@ -538,6 +651,8 @@ class TelegramStorageModelRegistryService {
       return TelegramStorageModelStatus(
         localAvailable:
             localAvailable,
+        modelId:
+            normalizedModelId,
         link:
             recovered.$1,
         journal:
@@ -548,6 +663,8 @@ class TelegramStorageModelRegistryService {
     return TelegramStorageModelStatus(
       localAvailable:
           localAvailable,
+      modelId:
+          normalizedModelId,
       link:
           null,
       journal:
@@ -559,33 +676,48 @@ class TelegramStorageModelRegistryService {
       (
         TelegramStorageModelLink,
         TelegramStorageUploadJournal
-      )?> _recoverFromJournals(
-    CatalogModel model,
-  ) async {
+      )?> _recoverFromJournals({
+    required CatalogModel model,
+    required String modelId,
+  }) async {
     final journals =
         await _journalService.list();
 
-    final normalized =
+    final normalizedPath =
         _normalizePath(
       model.folderPath,
     );
 
     for (final journal
         in journals) {
-      final sourcePath =
-          await _readRecoverySourceFolderPath(
+      final descriptor =
+          await _readRecoveryDescriptor(
         journal,
       );
 
-      if (sourcePath ==
+      if (descriptor ==
           null) {
         continue;
       }
 
-      if (_normalizePath(
-            sourcePath,
-          ) !=
-          normalized) {
+      final descriptorModelId =
+          descriptor.modelId;
+
+      final modelIdMatches =
+          modelId.isNotEmpty &&
+          descriptorModelId.isNotEmpty &&
+          descriptorModelId ==
+              modelId;
+
+      final pathMatches =
+          descriptor.sourceFolderPath.isNotEmpty &&
+          _normalizePath(
+                descriptor.sourceFolderPath,
+              ) ==
+              normalizedPath;
+
+      if (!modelIdMatches &&
+          !pathMatches) {
         continue;
       }
 
@@ -593,6 +725,8 @@ class TelegramStorageModelRegistryService {
           await linkPackage(
         model:
             model,
+        modelId:
+            modelId,
         packageId:
             journal.packageId,
       );
@@ -606,8 +740,8 @@ class TelegramStorageModelRegistryService {
     return null;
   }
 
-  Future<String?>
-      _readRecoverySourceFolderPath(
+  Future<_RecoveryIdentity?>
+      _readRecoveryDescriptor(
     TelegramStorageUploadJournal journal,
   ) async {
     final stagingPath =
@@ -657,20 +791,68 @@ class TelegramStorageModelRegistryService {
         rawPackage,
       );
 
-      final sourcePath =
+      final sourceFolderPath =
           package['sourceFolderPath']
-              ?.toString()
-              .trim();
+                  ?.toString()
+                  .trim() ??
+              '';
 
-      if (sourcePath ==
-              null ||
-          sourcePath.isEmpty) {
+      String modelId =
+          '';
+
+      final rawCatalog =
+          package['catalog'];
+
+      if (rawCatalog is Map) {
+        final catalog =
+            Map<String, dynamic>.from(
+          rawCatalog,
+        );
+
+        modelId =
+            catalog['modelId']
+                    ?.toString()
+                    .trim() ??
+                '';
+      }
+
+      if (sourceFolderPath.isEmpty &&
+          modelId.isEmpty) {
         return null;
       }
 
-      return sourcePath;
+      return _RecoveryIdentity(
+        sourceFolderPath:
+            sourceFolderPath,
+        modelId:
+            modelId,
+      );
     } catch (_) {
       return null;
     }
   }
+}
+
+class _RecoveryIdentity {
+  final String sourceFolderPath;
+
+  final String modelId;
+
+  const _RecoveryIdentity({
+    required this.sourceFolderPath,
+    required this.modelId,
+  });
+}
+
+class TelegramStorageModelRegistryException
+    implements Exception {
+  final String message;
+
+  const TelegramStorageModelRegistryException(
+    this.message,
+  );
+
+  @override
+  String toString() =>
+      message;
 }

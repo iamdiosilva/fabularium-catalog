@@ -141,6 +141,8 @@ class TelegramStoragePackageRecoveryService {
                 catalog == null
                     ? null
                     : <String, dynamic>{
+                        'modelId':
+                            catalog.modelId,
                         'name':
                             catalog.name,
                         'studio':
@@ -297,6 +299,11 @@ class TelegramStoragePackageRecoveryService {
 
       catalog =
           TelegramStorageCatalogInfo(
+        modelId:
+            _optionalString(
+                  catalogData['modelId'],
+                ) ??
+                '',
         name:
             _requiredString(
           catalogData['name'],

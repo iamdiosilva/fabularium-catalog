@@ -7,6 +7,7 @@ import '../models/catalog_model.dart';
 import '../models/telegram_storage_package.dart';
 import '../models/telegram_storage_workspace.dart';
 import '../services/cagalog_scanner.dart';
+import '../services/catalog_model_identity_service.dart';
 import '../services/telegram_storage_model_registry_service.dart';
 import '../services/telegram_storage_package_recovery_service.dart';
 import '../services/telegram_storage_package_uploader.dart';
@@ -42,6 +43,10 @@ class _ModelDetailsPageState
   final CatalogScanner _scanner =
       CatalogScanner();
 
+  final CatalogModelIdentityService
+      _identityService =
+      CatalogModelIdentityService.instance;
+
   final TelegramStorageWorkspaceService
       _workspaceService =
       TelegramStorageWorkspaceService.instance;
@@ -67,6 +72,9 @@ class _ModelDetailsPageState
       const TelegramStorageWorkspace.empty();
 
   TelegramStorageModelStatus? _storageStatus;
+
+  String _modelId =
+      '';
 
   int _selectedImage =
       0;
@@ -234,9 +242,52 @@ class _ModelDetailsPageState
       final workspace =
           await _workspaceService.load();
 
+      final modelId =
+          await _identityService.ensureModelId(
+        _model,
+      );
+
+      if (_model.config['modelId'] !=
+          modelId) {
+        _model =
+            CatalogModel(
+          folderPath:
+              _model.folderPath,
+          name:
+              _model.name,
+          studio:
+              _model.studio,
+          category:
+              _model.category,
+          type:
+              _model.type,
+          scale:
+              _model.scale,
+          height:
+              _model.height,
+          tags:
+              _model.tags,
+          description:
+              _model.description,
+          images:
+              _model.images,
+          archiveFiles:
+              _model.archiveFiles,
+          config:
+              <String, dynamic>{
+            ..._model.config,
+            'modelId':
+                modelId,
+          },
+        );
+      }
+
       final status =
           await _storageRegistry.getStatus(
-        _model,
+        model:
+            _model,
+        modelId:
+            modelId,
       );
 
       if (!mounted) {
@@ -248,6 +299,8 @@ class _ModelDetailsPageState
             workspace;
         _storageStatus =
             status;
+        _modelId =
+            modelId;
         _isLoadingStorage =
             false;
       });
@@ -428,6 +481,12 @@ class _ModelDetailsPageState
         },
       );
 
+      package =
+          _attachModelIdToPackage(
+        package,
+        _modelId,
+      );
+
       await _packageRecoveryService
           .savePackage(
         package,
@@ -437,6 +496,8 @@ class _ModelDetailsPageState
           .linkPackage(
         model:
             _model,
+        modelId:
+            _modelId,
         packageId:
             package.packageId,
       );
@@ -541,6 +602,68 @@ class _ModelDetailsPageState
         });
       }
     }
+  }
+
+  TelegramStoragePackage _attachModelIdToPackage(
+    TelegramStoragePackage package,
+    String modelId,
+  ) {
+    final catalog =
+        package.catalog;
+
+    final updatedCatalog =
+        catalog ==
+                null
+            ? null
+            : TelegramStorageCatalogInfo(
+                modelId:
+                    modelId,
+                name:
+                    catalog.name,
+                studio:
+                    catalog.studio,
+                category:
+                    catalog.category,
+                type:
+                    catalog.type,
+                scale:
+                    catalog.scale,
+                height:
+                    catalog.height,
+                description:
+                    catalog.description,
+                tags:
+                    catalog.tags,
+                galleryImagePaths:
+                    catalog.galleryImagePaths,
+              );
+
+    return TelegramStoragePackage(
+      packageId:
+          package.packageId,
+      sourceFolderName:
+          package.sourceFolderName,
+      sourceFolderPath:
+          package.sourceFolderPath,
+      sourceSize:
+          package.sourceSize,
+      archiveFileName:
+          package.archiveFileName,
+      archiveSize:
+          package.archiveSize,
+      archiveSha256:
+          package.archiveSha256,
+      stagingDirectoryPath:
+          package.stagingDirectoryPath,
+      manifestPath:
+          package.manifestPath,
+      createdAt:
+          package.createdAt,
+      parts:
+          package.parts,
+      catalog:
+          updatedCatalog,
+    );
   }
 
   String _storageStatusDescription() {
@@ -1224,7 +1347,8 @@ class _ModelDetailsPageState
               Icons.edit_outlined,
             ),
             onPressed:
-                _isRefreshingModel
+                _isRefreshingModel ||
+                        _isLoadingStorage
                     ? null
                     : _editModel,
           ),
@@ -1566,7 +1690,8 @@ class _ModelDetailsPageState
             child:
                 FilledButton.icon(
               onPressed:
-                  _isRefreshingModel
+                  _isRefreshingModel ||
+                          _isLoadingStorage
                       ? null
                       : _editModel,
               icon:
@@ -1690,6 +1815,19 @@ class _ModelDetailsPageState
               icon:
                   Icons.archive_outlined,
             ),
+            if (_modelId.isNotEmpty) ...[
+              const SizedBox(
+                height:
+                    6,
+              ),
+              SelectableText(
+                'Model ID: $_modelId',
+                style:
+                    Theme.of(context)
+                        .textTheme
+                        .bodySmall,
+              ),
+            ],
             if (journal !=
                 null) ...[
               const Divider(
@@ -1893,9 +2031,10 @@ class _ModelDetailsPageState
                   12,
             ),
             Text(
-              'Telegram status is currently based on the local Storage V3 '
-              'journal. Repair will later verify these message IDs directly '
-              'against Telegram.',
+              'modelId is persistent in this model config.json and is also '
+              'stored in new Telegram manifests. Upload uses four concurrent '
+              '512 KB Telegram parts. Repair will later verify message IDs '
+              'directly against Telegram.',
               style:
                   Theme.of(context)
                       .textTheme

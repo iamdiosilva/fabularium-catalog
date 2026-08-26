@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 import 'dart:math';
 
 import 'package:t/t.dart' as t;
@@ -59,11 +60,8 @@ class TelegramStorageMediaGroupService {
   static final TelegramStorageMediaGroupService instance =
       TelegramStorageMediaGroupService._();
 
-  static const int maxGroupItems = 10;
-
-  // ============================================================
-  // SEND GROUP
-  // ============================================================
+  static const int maxGroupItems =
+      10;
 
   Future<TelegramStorageMediaGroupResult>
       sendGroup({
@@ -78,24 +76,29 @@ class TelegramStorageMediaGroupService {
       );
     }
 
-    if (items.length > maxGroupItems) {
+    if (items.length >
+        maxGroupItems) {
       throw TelegramStorageMediaGroupException(
         'Telegram media groups support at most '
         '$maxGroupItems items.',
       );
     }
 
-    final kind = items.first.kind;
+    final kind =
+        items.first.kind;
 
-    for (final item in items) {
-      if (item.kind != kind) {
+    for (final item
+        in items) {
+      if (item.kind !=
+          kind) {
         throw const TelegramStorageMediaGroupException(
           'Photos and documents cannot be mixed '
           'in the same Fabularium media group.',
         );
       }
 
-      final file = File(
+      final file =
+          File(
         item.filePath,
       );
 
@@ -106,11 +109,14 @@ class TelegramStorageMediaGroupService {
       }
     }
 
-    final eventPort = ReceivePort();
+    final eventPort =
+        ReceivePort();
 
-    final errorPort = ReceivePort();
+    final errorPort =
+        ReceivePort();
 
-    final exitPort = ReceivePort();
+    final exitPort =
+        ReceivePort();
 
     final completer =
         Completer<Map<String, dynamic>>();
@@ -143,7 +149,8 @@ class TelegramStorageMediaGroupService {
         final type =
             message['type'];
 
-        if (type == 'progress') {
+        if (type ==
+            'progress') {
           final value =
               message['progress'];
 
@@ -167,7 +174,8 @@ class TelegramStorageMediaGroupService {
           return;
         }
 
-        if (type == 'completed') {
+        if (type ==
+            'completed') {
           if (completer.isCompleted) {
             return;
           }
@@ -186,7 +194,8 @@ class TelegramStorageMediaGroupService {
           return;
         }
 
-        if (type == 'error') {
+        if (type ==
+            'error') {
           if (completer.isCompleted) {
             return;
           }
@@ -350,26 +359,28 @@ class TelegramStorageMediaGroupService {
     const int mask =
         0x7FFFFFFFFFFFFFFF;
 
-    int hash = offset;
+    int hash =
+        offset;
 
     for (final codeUnit
         in value.codeUnits) {
-      hash ^= codeUnit;
+      hash ^=
+          codeUnit;
 
       hash =
-          (hash * prime) &
+          (
+            hash *
+            prime
+          ) &
           mask;
     }
 
-    return hash == 0
+    return hash ==
+            0
         ? 1
         : hash;
   }
 }
-
-// ============================================================
-// WORKER
-// ============================================================
 
 @pragma(
   'vm:entry-point',
@@ -426,13 +437,15 @@ Future<void>
             .toList();
 
     if (items.isEmpty ||
-        items.length > 10) {
+        items.length >
+            10) {
       throw Exception(
         'Invalid media group size.',
       );
     }
 
-    int totalBytes = 0;
+    int totalBytes =
+        0;
 
     for (final item
         in items) {
@@ -446,41 +459,33 @@ Future<void>
           await file.length();
     }
 
-    if (totalBytes <= 0) {
+    if (totalBytes <=
+        0) {
       throw Exception(
         'Media group contains no data.',
       );
     }
 
-    int completedBytes = 0;
+    int completedBytes =
+        0;
 
-    /*
-     * IMPORTANTE:
-     *
-     * usamos InputSingleMedia concreto,
-     * não InputSingleMediaBase.
-     *
-     * Assim temos acesso a:
-     *
-     * media
-     * message
-     * randomId
-     */
     final prepared =
         <t.InputSingleMedia>[];
 
     final randomIds =
         <int>[];
 
-    // ==========================================================
-    // PREPARE MEDIA
-    // ==========================================================
+    final transferWatch =
+        Stopwatch()
+          ..start();
 
     for (int index = 0;
-        index < items.length;
+        index <
+            items.length;
         index++) {
       final item =
-          items[index];
+          items[
+              index];
 
       final path =
           item['filePath']
@@ -538,20 +543,28 @@ Future<void>
             (
           uploadedBytes,
         ) {
+          final totalUploaded =
+              completedBytes +
+              uploadedBytes;
+
           final overall =
-              (
-                    completedBytes +
-                        uploadedBytes
-                  ) /
+              totalUploaded /
                   totalBytes *
                   0.88;
+
+          final rate =
+              _formatTransferRate(
+            totalUploaded,
+            transferWatch.elapsed,
+          );
 
           _sendProgress(
             eventPort,
             overall,
             'Uploading '
             '${index + 1}/${items.length}: '
-            '$fileName',
+            '$fileName'
+            '${rate == null ? '' : ' • $rate'}',
           );
         },
       );
@@ -594,10 +607,6 @@ Future<void>
           ],
         );
       }
-
-      // ========================================================
-      // UPLOAD MEDIA
-      // ========================================================
 
       final uploadMediaResponse =
           await client
@@ -648,36 +657,36 @@ Future<void>
       completedBytes +=
           fileSize;
 
+      final rate =
+          _formatTransferRate(
+        completedBytes,
+        transferWatch.elapsed,
+      );
+
       _sendProgress(
         eventPort,
         completedBytes /
             totalBytes *
             0.9,
         'Prepared '
-        '${index + 1}/${items.length}.',
+        '${index + 1}/${items.length}'
+        '${rate == null ? '.' : ' • $rate'}',
       );
     }
-
-    // ==========================================================
-    // PUBLISH
-    // ==========================================================
 
     _sendProgress(
       eventPort,
       0.94,
-      prepared.length == 1
+      prepared.length ==
+              1
           ? 'Publishing media...'
           : 'Publishing media group...',
     );
 
     dynamic updates;
 
-    /*
-     * Um único arquivo não gera album.
-     *
-     * Nesse caso usamos sendMedia.
-     */
-    if (prepared.length == 1) {
+    if (prepared.length ==
+        1) {
       final item =
           prepared.first;
 
@@ -716,7 +725,8 @@ Future<void>
         ),
       );
 
-      if (response.error != null) {
+      if (response.error !=
+          null) {
         throw Exception(
           response
               .error!
@@ -758,7 +768,8 @@ Future<void>
         ),
       );
 
-      if (response.error != null) {
+      if (response.error !=
+          null) {
         throw Exception(
           response
               .error!
@@ -818,10 +829,6 @@ Future<void>
   }
 }
 
-// ============================================================
-// RAW FILE UPLOAD
-// ============================================================
-
 Future<t.InputFileBase>
     _uploadInputFile({
   required dynamic client,
@@ -835,25 +842,47 @@ Future<t.InputFileBase>
   final size =
       await file.length();
 
-  if (size <= 0) {
+  if (size <=
+      0) {
     throw Exception(
       'Cannot upload empty file: '
       '$fileName',
     );
   }
 
+  /*
+   * Telegram recommends 512 KB parts.
+   *
+   * The important optimization is not a larger
+   * part, but keeping multiple save-part RPCs
+   * active at the same time.
+   */
   const int partSize =
-      512 * 1024;
+      512 *
+      1024;
+
+  /*
+   * Conservative first tuning.
+   *
+   * 4 x 512 KB = about 2 MB of in-flight file
+   * data plus MTProto overhead.
+   */
+  const int maxConcurrentParts =
+      4;
 
   final int totalParts =
-      (size +
-              partSize -
-              1) ~/
+      (
+            size +
+                partSize -
+                1
+          ) ~/
           partSize;
 
   final bool isBig =
       size >=
-          10 * 1024 * 1024;
+          10 *
+              1024 *
+              1024;
 
   final fileId =
       _random64();
@@ -867,87 +896,99 @@ Future<t.InputFileBase>
           FileMode.read,
     );
 
-    int uploaded = 0;
+    int nextPart =
+        0;
 
-    for (int partIndex = 0;
-        partIndex < totalParts;
-        partIndex++) {
-      final remaining =
-          size -
-              uploaded;
+    int uploaded =
+        0;
 
-      final readLength =
-          min<int>(
-        partSize,
-        remaining,
-      );
+    while (nextPart <
+        totalParts) {
+      final operations =
+          <Future<void>>[];
 
-      final bytes =
-          await input.read(
-        readLength,
-      );
+      for (int slot = 0;
+          slot <
+                  maxConcurrentParts &&
+              nextPart <
+                  totalParts;
+          slot++) {
+        final partIndex =
+            nextPart;
 
-      if (bytes.isEmpty) {
-        throw Exception(
-          'Unexpected EOF while '
-          'uploading $fileName.',
+        nextPart++;
+
+        final expectedOffset =
+            partIndex *
+            partSize;
+
+        final remaining =
+            size -
+            expectedOffset;
+
+        final readLength =
+            min<int>(
+          partSize,
+          remaining,
+        );
+
+        final bytes =
+            await input.read(
+          readLength,
+        );
+
+        if (bytes.isEmpty) {
+          throw Exception(
+            'Unexpected EOF while '
+            'uploading $fileName.',
+          );
+        }
+
+        final byteCount =
+            bytes.length;
+
+        final operation =
+            _saveFilePart(
+          client:
+              client,
+          isBig:
+              isBig,
+          fileId:
+              fileId,
+          partIndex:
+              partIndex,
+          totalParts:
+              totalParts,
+          bytes:
+              bytes,
+          fileName:
+              fileName,
+        ).then(
+          (_) {
+            uploaded +=
+                byteCount;
+
+            onBytesUploaded(
+              uploaded,
+            );
+          },
+        );
+
+        operations.add(
+          operation,
         );
       }
 
-      final response =
-          isBig
-              ? await client
-                  .invoke(
-                    t.UploadSaveBigFilePart(
-                      fileId:
-                          fileId,
-                      filePart:
-                          partIndex,
-                      fileTotalParts:
-                          totalParts,
-                      bytes:
-                          bytes,
-                    ),
-                  )
-                  .timeout(
-                    const Duration(
-                      seconds:
-                          60,
-                    ),
-                  )
-              : await client
-                  .invoke(
-                    t.UploadSaveFilePart(
-                      fileId:
-                          fileId,
-                      filePart:
-                          partIndex,
-                      bytes:
-                          bytes,
-                    ),
-                  )
-                  .timeout(
-                    const Duration(
-                      seconds:
-                          60,
-                    ),
-                  );
+      await Future.wait(
+        operations,
+      );
+    }
 
-      if (response.error != null) {
-        throw Exception(
-          'Upload failed on part '
-          '${partIndex + 1}/'
-          '$totalParts '
-          'for $fileName: '
-          '${response.error!.errorMessage}',
-        );
-      }
-
-      uploaded +=
-          bytes.length;
-
-      onBytesUploaded(
-        uploaded,
+    if (uploaded !=
+        size) {
+      throw Exception(
+        'Upload byte count mismatch for '
+        '$fileName: $uploaded/$size.',
       );
     }
   } finally {
@@ -979,14 +1020,71 @@ Future<t.InputFileBase>
   );
 }
 
-// ============================================================
-// UPLOADED MEDIA -> REMOTE MEDIA
-// ============================================================
+Future<void> _saveFilePart({
+  required dynamic client,
+  required bool isBig,
+  required int fileId,
+  required int partIndex,
+  required int totalParts,
+  required Uint8List bytes,
+  required String fileName,
+}) async {
+  final response =
+      isBig
+          ? await client
+              .invoke(
+                t.UploadSaveBigFilePart(
+                  fileId:
+                      fileId,
+                  filePart:
+                      partIndex,
+                  fileTotalParts:
+                      totalParts,
+                  bytes:
+                      bytes,
+                ),
+              )
+              .timeout(
+                const Duration(
+                  seconds:
+                      60,
+                ),
+              )
+          : await client
+              .invoke(
+                t.UploadSaveFilePart(
+                  fileId:
+                      fileId,
+                  filePart:
+                      partIndex,
+                  bytes:
+                      bytes,
+                ),
+              )
+              .timeout(
+                const Duration(
+                  seconds:
+                      60,
+                ),
+              );
+
+  if (response.error !=
+      null) {
+    throw Exception(
+      'Upload failed on part '
+      '${partIndex + 1}/'
+      '$totalParts '
+      'for $fileName: '
+      '${response.error!.errorMessage}',
+    );
+  }
+}
 
 t.InputMediaBase _convertUploadedMedia(
   dynamic result,
 ) {
-  if (result == null) {
+  if (result ==
+      null) {
     throw Exception(
       'Telegram returned empty media.',
     );
@@ -996,16 +1094,13 @@ t.InputMediaBase _convertUploadedMedia(
       result.runtimeType
           .toString();
 
-  // ==========================================================
-  // PHOTO
-  // ==========================================================
-
   if (runtimeType ==
       'MessageMediaPhoto') {
     final dynamic photo =
         result.photo;
 
-    if (photo == null ||
+    if (photo ==
+            null ||
         photo.runtimeType
                 .toString() !=
             'Photo') {
@@ -1033,16 +1128,13 @@ t.InputMediaBase _convertUploadedMedia(
     );
   }
 
-  // ==========================================================
-  // DOCUMENT
-  // ==========================================================
-
   if (runtimeType ==
       'MessageMediaDocument') {
     final dynamic document =
         result.document;
 
-    if (document == null ||
+    if (document ==
+            null ||
         document.runtimeType
                 .toString() !=
             'Document') {
@@ -1074,10 +1166,6 @@ t.InputMediaBase _convertUploadedMedia(
   );
 }
 
-// ============================================================
-// EXTRACT SENT MESSAGE IDS
-// ============================================================
-
 _SentMediaGroup _extractSentGroup({
   required dynamic updates,
   required List<int> randomIds,
@@ -1090,15 +1178,12 @@ _SentMediaGroup _extractSentGroup({
 
   int? groupedId;
 
-  if (updates == null) {
+  if (updates ==
+      null) {
     throw Exception(
       'Telegram returned no updates.',
     );
   }
-
-  // ==========================================================
-  // SINGLE MESSAGE
-  // ==========================================================
 
   if (updates.runtimeType
           .toString() ==
@@ -1116,10 +1201,6 @@ _SentMediaGroup _extractSentGroup({
     );
   }
 
-  // ==========================================================
-  // UPDATES
-  // ==========================================================
-
   List<dynamic> rawUpdates =
       <dynamic>[];
 
@@ -1136,11 +1217,6 @@ _SentMediaGroup _extractSentGroup({
         update.runtimeType
             .toString();
 
-    /*
-     * Esse update associa:
-     *
-     * randomId -> messageId
-     */
     if (type ==
         'UpdateMessageID') {
       try {
@@ -1183,10 +1259,6 @@ _SentMediaGroup _extractSentGroup({
     }
   }
 
-  // ==========================================================
-  // PREFERRED MAPPING
-  // ==========================================================
-
   final ordered =
       <int>[];
 
@@ -1200,7 +1272,8 @@ _SentMediaGroup _extractSentGroup({
           randomId
         ];
 
-    if (id == null) {
+    if (id ==
+        null) {
       completeMapping =
           false;
 
@@ -1222,10 +1295,6 @@ _SentMediaGroup _extractSentGroup({
           groupedId,
     );
   }
-
-  // ==========================================================
-  // FALLBACK
-  // ==========================================================
 
   fallbackMessageIds.sort();
 
@@ -1257,31 +1326,75 @@ class _SentMediaGroup {
   });
 }
 
-// ============================================================
-// HELPERS
-// ============================================================
-
 int _random64() {
   final random =
       Random.secure();
 
   final high =
       random.nextInt(
-    1 << 31,
+    1 <<
+        31,
   );
 
   final low =
       random.nextInt(
-    1 << 32,
+    1 <<
+        32,
   );
 
   final value =
-      (high << 32) |
-          low;
+      (
+        high <<
+        32
+      ) |
+      low;
 
-  return value == 0
+  return value ==
+          0
       ? 1
       : value;
+}
+
+String? _formatTransferRate(
+  int uploadedBytes,
+  Duration elapsed,
+) {
+  final milliseconds =
+      elapsed.inMilliseconds;
+
+  if (uploadedBytes <=
+          0 ||
+      milliseconds <
+          250) {
+    return null;
+  }
+
+  final seconds =
+      milliseconds /
+      1000;
+
+  final bytesPerSecond =
+      uploadedBytes /
+      seconds;
+
+  const mb =
+      1024 *
+      1024;
+
+  if (bytesPerSecond >=
+      mb) {
+    return '${(bytesPerSecond / mb).toStringAsFixed(2)} MB/s';
+  }
+
+  const kb =
+      1024;
+
+  if (bytesPerSecond >=
+      kb) {
+    return '${(bytesPerSecond / kb).toStringAsFixed(0)} KB/s';
+  }
+
+  return '${bytesPerSecond.toStringAsFixed(0)} B/s';
 }
 
 void _sendProgress(
