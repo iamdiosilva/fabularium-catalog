@@ -5,7 +5,6 @@ import '../services/telegram_storage_upload_journal_service.dart';
 import '../services/telegram_storage_workspace_service.dart';
 import 'telegram_storage_recovery_page.dart';
 import 'telegram_storage_settings_page.dart';
-import 'telegram_storage_upload_page.dart';
 
 class TelegramStoragePage
     extends StatefulWidget {
@@ -90,18 +89,6 @@ class _TelegramStoragePageState
             false;
       });
     }
-  }
-
-  Future<void> _openUpload() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder:
-            (_) =>
-                const TelegramStorageUploadPage(),
-      ),
-    );
-
-    await _refreshSummary();
   }
 
   Future<void> _openRecovery() async {
@@ -189,8 +176,9 @@ class _TelegramStoragePageState
               8,
         ),
         const Text(
-          'Telegram Storage V3 is separated into model uploads, '
-          'recovery operations and channel configuration.',
+          'Model uploads now start directly from the Fabularium Catalog '
+          'model details page. This area is used only for Storage V3 '
+          'administration and recovery.',
         ),
         if (_error !=
             null) ...[
@@ -204,20 +192,68 @@ class _TelegramStoragePageState
           height:
               24,
         ),
-        _buildNavigationCard(
-          icon:
-              Icons.cloud_upload_outlined,
-          title:
-              'Upload Models',
-          description:
-              'Select registered models from the Fabularium Catalog, '
-              'prepare Storage V3 packages and upload them to Telegram.',
-          status:
-              _workspace.isFullyConfigured
-                  ? 'Ready'
-                  : 'Configure Storage first',
-          onTap:
-              _openUpload,
+        Card(
+          child:
+              Padding(
+            padding:
+                const EdgeInsets.all(
+              20,
+            ),
+            child:
+                Row(
+              children: [
+                const CircleAvatar(
+                  radius:
+                      28,
+                  child:
+                      Icon(
+                    Icons.collections_bookmark_outlined,
+                    size:
+                        28,
+                  ),
+                ),
+                const SizedBox(
+                  width:
+                      18,
+                ),
+                Expanded(
+                  child:
+                      Column(
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Model Uploads',
+                        style:
+                            TextStyle(
+                          fontSize:
+                              18,
+                          fontWeight:
+                              FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(
+                        height:
+                            4,
+                      ),
+                      const Text(
+                        'Open a model in Fabularium Catalog and use its '
+                        'Telegram Storage card to upload it.',
+                      ),
+                    ],
+                  ),
+                ),
+                Chip(
+                  label:
+                      Text(
+                    _workspace.isFullyConfigured
+                        ? 'Ready'
+                        : 'Setup required',
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
         const SizedBox(
           height:
