@@ -191,6 +191,7 @@ class TelegramStorageCleanService {
     StreamSubscription<dynamic>? eventSubscription;
     StreamSubscription<dynamic>? errorSubscription;
     StreamSubscription<dynamic>? exitSubscription;
+    Timer? exitGraceTimer;
 
     Isolate? isolate;
 
@@ -280,13 +281,36 @@ class TelegramStorageCleanService {
     exitSubscription =
         exitPort.listen(
       (_) {
-        if (!completer.isCompleted) {
-          completer.completeError(
-            const TelegramStorageCleanException(
-              'Telegram clean worker stopped unexpectedly.',
-            ),
-          );
+        if (completer.isCompleted) {
+          return;
         }
+
+        /*
+         * The worker sends its final `completed` event through
+         * eventPort and then exits. Those notifications travel
+         * through different ports, so Windows/Dart may deliver
+         * onExit first even though the Telegram operation
+         * completed successfully.
+         *
+         * Give the normal completion/error event a small grace
+         * period before treating the isolate exit as unexpected.
+         */
+        exitGraceTimer?.cancel();
+        exitGraceTimer =
+            Timer(
+          const Duration(
+            seconds: 1,
+          ),
+          () {
+            if (!completer.isCompleted) {
+              completer.completeError(
+                const TelegramStorageCleanException(
+                  'Telegram clean worker stopped unexpectedly.',
+                ),
+              );
+            }
+          },
+        );
       },
     );
 
@@ -309,6 +333,8 @@ class TelegramStorageCleanService {
 
       await completer.future;
     } finally {
+      exitGraceTimer?.cancel();
+
       isolate?.kill(
         priority: Isolate.immediate,
       );
