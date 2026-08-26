@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'config/fabularium_config.dart';
 import 'pages/catalog_page.dart';
 import 'pages/download_queue_page.dart';
 import 'services/performance_monitor.dart';
@@ -90,7 +91,7 @@ class FabulariumApp
       home:
           const CatalogPage(
         fabulariumPath:
-            r'D:\Fabularium',
+           FabulariumConfig.rootPath,
       ),
     );
   }
