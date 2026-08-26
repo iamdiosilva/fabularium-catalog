@@ -14,6 +14,7 @@ import '../services/telegram_storage_package_recovery_service.dart';
 import '../services/telegram_storage_package_uploader.dart';
 import '../services/telegram_storage_packager.dart';
 import '../services/telegram_storage_workspace_service.dart';
+import '../services/telegram_storage_verification_service.dart';
 import 'pending_models_page.dart';
 import 'telegram_storage_recovery_page.dart';
 import 'telegram_storage_settings_page.dart';
@@ -67,6 +68,10 @@ class _ModelDetailsPageState
       _storageRegistry =
       TelegramStorageModelRegistryService.instance;
 
+  final TelegramStorageVerificationService
+      _verificationService =
+      TelegramStorageVerificationService.instance;
+
   late CatalogModel _model;
 
   TelegramStorageWorkspace _storageWorkspace =
@@ -106,6 +111,17 @@ class _ModelDetailsPageState
       '';
 
   String? _storageError;
+
+  bool _isVerifyingStorage =
+      false;
+
+  TelegramStorageVerificationResult?
+      _storageVerification;
+
+  String? _storageVerificationError;
+
+  String _storageVerificationStage =
+      '';
 
   @override
   void initState() {
@@ -288,13 +304,91 @@ class _ModelDetailsPageState
         );
       }
 
-      final status =
+      var status =
           await _storageRegistry.getStatus(
         model:
             _model,
         modelId:
             modelId,
       );
+
+      TelegramStorageVerificationResult?
+          verification;
+
+      String? verificationError;
+
+      final journal =
+          status.journal;
+
+      /*
+       * A STORED journal is not trusted blindly.
+       *
+       * We ask Telegram for every recorded
+       * message ID before presenting it as
+       * remotely available.
+       */
+      if (journal?.isStored ==
+          true) {
+        if (mounted) {
+          setState(() {
+            _isVerifyingStorage =
+                true;
+            _storageVerificationStage =
+                'Checking Telegram...';
+            _storageVerificationError =
+                null;
+          });
+        }
+
+        try {
+          verification =
+              await _verificationService
+                  .verifyAndUpdate(
+            journal:
+                journal!,
+            onProgress:
+                (
+              progress,
+            ) {
+              if (!mounted) {
+                return;
+              }
+
+              setState(() {
+                _storageVerificationStage =
+                    progress.stage;
+              });
+            },
+          );
+
+          /*
+           * Missing remote messages cause the
+           * journal to be marked FAILED.
+           * Reload the registry so the catalog
+           * immediately reflects the new state.
+           */
+          if (!verification.allPresent) {
+            status =
+                await _storageRegistry
+                    .getStatus(
+              model:
+                  _model,
+              modelId:
+                  modelId,
+            );
+          }
+        } catch (e) {
+          /*
+           * Network/API verification errors do
+           * NOT downgrade the catalog.
+           *
+           * Only a successful Telegram response
+           * proving IDs are absent can do that.
+           */
+          verificationError =
+              e.toString();
+        }
+      }
 
       if (!mounted) {
         return;
@@ -307,6 +401,14 @@ class _ModelDetailsPageState
             status;
         _modelId =
             modelId;
+        _storageVerification =
+            verification;
+        _storageVerificationError =
+            verificationError;
+        _storageVerificationStage =
+            '';
+        _isVerifyingStorage =
+            false;
         _isLoadingStorage =
             false;
       });
@@ -316,6 +418,8 @@ class _ModelDetailsPageState
       }
 
       setState(() {
+        _isVerifyingStorage =
+            false;
         _isLoadingStorage =
             false;
         _storageError =
@@ -738,6 +842,13 @@ class _ModelDetailsPageState
     );
   }
 
+  bool _isRemoteMissingJournal() {
+    return _verificationService
+        .isRemoteMissingJournal(
+      _storageStatus?.journal,
+    );
+  }
+
   String _storageStatusLabel() {
     final runtime =
         _runtimeStorageStatus;
@@ -750,6 +861,14 @@ class _ModelDetailsPageState
     if (runtime ==
         _ModelStorageRuntimeStatus.uploading) {
       return 'UPLOADING';
+    }
+
+    if (_isVerifyingStorage) {
+      return 'VERIFYING';
+    }
+
+    if (_isRemoteMissingJournal()) {
+      return 'MISSING';
     }
 
     return _storageStatus
@@ -770,6 +889,31 @@ class _ModelDetailsPageState
 
     final status =
         _storageStatus;
+
+    if (_isVerifyingStorage) {
+      return _storageVerificationStage.isEmpty
+          ? 'Checking recorded Storage V3 messages directly on Telegram.'
+          : _storageVerificationStage;
+    }
+
+    if (_isRemoteMissingJournal()) {
+      return 'Telegram verification found that one or more recorded '
+          'messages are missing. The catalog was updated and this '
+          'package must be cleaned before it can be uploaded again.';
+    }
+
+    if (_storageVerificationError !=
+        null) {
+      return 'The package is recorded as STORED, but Telegram '
+          'verification could not be completed right now.';
+    }
+
+    if (_storageVerification?.allPresent ==
+        true) {
+      return 'Storage V3 package verified directly on Telegram: '
+          '${_storageVerification!.totalFound}/'
+          '${_storageVerification!.totalExpected} messages available.';
+    }
 
     if (status ==
         null) {
@@ -2009,6 +2153,93 @@ class _ModelDetailsPageState
                 ),
               ],
             ],
+            if (_isVerifyingStorage) ...[
+              const SizedBox(
+                height:
+                    14,
+              ),
+              Row(
+                children: [
+                  const SizedBox(
+                    width:
+                        18,
+                    height:
+                        18,
+                    child:
+                        CircularProgressIndicator(
+                      strokeWidth:
+                          2,
+                    ),
+                  ),
+                  const SizedBox(
+                    width:
+                        10,
+                  ),
+                  Expanded(
+                    child:
+                        Text(
+                      _storageVerificationStage.isEmpty
+                          ? 'Verifying Telegram messages...'
+                          : _storageVerificationStage,
+                    ),
+                  ),
+                ],
+              ),
+            ] else if (_storageVerification?.allPresent ==
+                true) ...[
+              const SizedBox(
+                height:
+                    14,
+              ),
+              _StorageInfoRow(
+                label:
+                    'Telegram',
+                value:
+                    'Verified '
+                    '${_storageVerification!.totalFound}/'
+                    '${_storageVerification!.totalExpected}',
+                icon:
+                    Icons.verified_outlined,
+              ),
+            ] else if (_isRemoteMissingJournal()) ...[
+              const SizedBox(
+                height:
+                    14,
+              ),
+              const _StorageInfoRow(
+                label:
+                    'Telegram',
+                value:
+                    'Missing messages',
+                icon:
+                    Icons.cloud_off_outlined,
+              ),
+            ] else if (_storageVerificationError !=
+                null) ...[
+              const SizedBox(
+                height:
+                    14,
+              ),
+              _StorageInfoRow(
+                label:
+                    'Verify',
+                value:
+                    'Unavailable',
+                icon:
+                    Icons.warning_amber_outlined,
+              ),
+              const SizedBox(
+                height:
+                    6,
+              ),
+              Text(
+                _storageVerificationError!,
+                style:
+                    Theme.of(context)
+                        .textTheme
+                        .bodySmall,
+              ),
+            ],
             if (_isStorageBusy) ...[
               const SizedBox(
                 height:
@@ -2138,7 +2369,8 @@ class _ModelDetailsPageState
                   ),
                 OutlinedButton.icon(
                   onPressed:
-                      _isStorageBusy
+                      _isStorageBusy ||
+                              _isVerifyingStorage
                           ? null
                           : _loadStorageState,
                   icon:
@@ -2157,11 +2389,10 @@ class _ModelDetailsPageState
                   12,
             ),
             Text(
-              'modelId is persistent in this model config.json and is also '
-              'stored in new Telegram manifests. Large uploads use up to '
-              'twelve parallel MTProto connections with a continuous '
-              '512 KB sliding-window scheduler. Repair will later verify '
-              'message IDs directly against Telegram.',
+              'STORED packages are verified directly against their exact '
+              'Telegram message IDs. If Telegram reports a missing message, '
+              'the local catalog is downgraded to MISSING and Resume is '
+              'blocked until the incomplete package is cleaned.',
               style:
                   Theme.of(context)
                       .textTheme

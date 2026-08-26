@@ -9,6 +9,7 @@ import '../services/telegram_storage_clean_service.dart';
 import '../services/telegram_storage_package_recovery_service.dart';
 import '../services/telegram_storage_package_uploader.dart';
 import '../services/telegram_storage_upload_journal_service.dart';
+import '../services/telegram_storage_verification_service.dart';
 
 class TelegramStorageRecoveryPage
     extends StatefulWidget {
@@ -191,11 +192,35 @@ class _TelegramStorageRecoveryPageState
         '${twoDigits(local.minute)}';
   }
 
+  bool _isRemoteMissing(
+    TelegramStorageUploadJournal journal,
+  ) {
+    return TelegramStorageVerificationService
+        .instance
+        .isRemoteMissingJournal(
+      journal,
+    );
+  }
+
   Future<void> _resumeJournal(
     TelegramStorageUploadJournal journal,
   ) async {
     if (_isBusy ||
         journal.isRemoving) {
+      return;
+    }
+
+    if (_isRemoteMissing(
+      journal,
+    )) {
+      setState(() {
+        _error =
+            'Resume is disabled because Telegram verification found '
+            'missing remote messages for this package. Use Clean to '
+            'remove the remaining recorded messages, then upload the '
+            'model again from its catalog details page.';
+      });
+
       return;
     }
 
@@ -1045,6 +1070,9 @@ class _TelegramStorageRecoveryPageState
                   onPressed:
                       _isBusy ||
                               journal.isRemoving ||
+                              _isRemoteMissing(
+                                journal,
+                              ) ||
                               !hasRecoveryDescriptor
                           ? null
                           : () =>
@@ -1093,7 +1121,23 @@ class _TelegramStorageRecoveryPageState
                         : 'Clean',
                   ),
                 ),
-                if (hasRecoveryDescriptor)
+                if (_isRemoteMissing(
+                  journal,
+                ))
+                  Text(
+                    'Resume unavailable: Telegram messages are missing. '
+                    'Use Clean before uploading again.',
+                    style:
+                        TextStyle(
+                      color:
+                          Theme.of(context)
+                              .colorScheme
+                              .error,
+                      fontWeight:
+                          FontWeight.w600,
+                    ),
+                  )
+                else if (hasRecoveryDescriptor)
                   const Chip(
                     visualDensity:
                         VisualDensity.compact,
