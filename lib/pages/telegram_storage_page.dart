@@ -8,6 +8,7 @@ import '../models/telegram_storage_channel.dart';
 import '../models/telegram_storage_package.dart';
 import '../models/telegram_storage_upload_journal.dart';
 import '../models/telegram_storage_workspace.dart';
+import '../services/telegram_storage_clean_service.dart';
 import '../services/telegram_storage_package_recovery_service.dart';
 import '../services/telegram_storage_package_uploader.dart';
 import '../services/telegram_storage_packager.dart';
@@ -42,6 +43,9 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
   final TelegramStoragePackageUploader _packageUploader =
       TelegramStoragePackageUploader.instance;
 
+  final TelegramStorageCleanService _cleanService =
+      TelegramStorageCleanService.instance;
+
   final TelegramStoragePackageRecoveryService _packageRecoveryService =
       TelegramStoragePackageRecoveryService.instance;
 
@@ -67,6 +71,9 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
   bool _isUploading = false;
   bool _isPackaging = false;
   bool _isUploadingPackage = false;
+  bool _isCleaning = false;
+
+  String? _cleaningPackageId;
 
   double _uploadProgress = 0;
   double _packageProgress = 0;
@@ -92,7 +99,8 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
       _isLoadingChannels ||
       _isUploading ||
       _isPackaging ||
-      _isUploadingPackage;
+      _isUploadingPackage ||
+      _isCleaning;
 
   @override
   void initState() {
@@ -822,6 +830,176 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
   }
 
   // ============================================================
+  // CLEAN JOURNAL
+  // ============================================================
+
+  Future<void> _cleanJournal(
+    TelegramStorageUploadJournal journal,
+  ) async {
+    if (_isBusy ||
+        journal.isStored) {
+      return;
+    }
+
+    final catalogCount =
+        journal.catalogMessageIds.length;
+
+    final filesCount =
+        journal.filesMessageIds.length;
+
+    final totalCount =
+        catalogCount + filesCount;
+
+    final confirmed =
+        await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text(
+            'Clean Incomplete Upload?',
+          ),
+          content: Text(
+            '${journal.modelName}\n\n'
+            'This will permanently remove only the Telegram messages '
+            'recorded by this incomplete upload journal.\n\n'
+            'Catalog messages: $catalogCount\n'
+            'Files messages: $filesCount\n'
+            'Total Telegram messages: $totalCount\n\n'
+            'After Telegram cleanup succeeds, the local staging folder '
+            'and recovery journal will also be deleted.\n\n'
+            'This action cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(
+                  context,
+                ).pop(
+                  false,
+                );
+              },
+              child: const Text(
+                'Cancel',
+              ),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.of(
+                  context,
+                ).pop(
+                  true,
+                );
+              },
+              icon: const Icon(
+                Icons.delete_sweep_outlined,
+              ),
+              label: const Text(
+                'Clean',
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true ||
+        !mounted) {
+      return;
+    }
+
+    try {
+      final removingJournal =
+          await _journalService.markRemoving(
+        journal,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isCleaning = true;
+        _cleaningPackageId =
+            journal.packageId;
+        _error = null;
+        _status =
+            'Preparing cleanup for ${journal.modelName}...';
+
+        final index =
+            _incompleteJournals.indexWhere(
+          (item) =>
+              item.packageId ==
+              journal.packageId,
+        );
+
+        if (index >= 0) {
+          final updated =
+              List<TelegramStorageUploadJournal>.from(
+            _incompleteJournals,
+          );
+
+          updated[index] =
+              removingJournal;
+
+          _incompleteJournals =
+              updated;
+        }
+      });
+
+      final result =
+          await _cleanService.clean(
+        journal: removingJournal,
+        markRemoving: false,
+        onProgress: (progress) {
+          if (!mounted) {
+            return;
+          }
+
+          setState(() {
+            _status =
+                progress.totalMessages <= 0
+                    ? progress.stage
+                    : '${progress.stage} '
+                        '${progress.deletedMessages}/'
+                        '${progress.totalMessages}';
+          });
+        },
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isCleaning = false;
+        _cleaningPackageId = null;
+        _status =
+            'Clean completed. '
+            '${result.totalMessagesDeleted} Telegram message'
+            '${result.totalMessagesDeleted == 1 ? '' : 's'} removed.';
+        _error = null;
+      });
+
+      await _loadIncompleteJournals();
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isCleaning = false;
+        _cleaningPackageId = null;
+        _error = e.toString();
+        _status =
+            'Clean stopped. The journal remains available so the '
+            'operation can be retried safely.';
+      });
+
+      await _loadIncompleteJournals();
+    }
+  }
+
+  // ============================================================
   // TEST UPLOAD
   // ============================================================
 
@@ -1433,7 +1611,7 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
                           Chip(
                             visualDensity: VisualDensity.compact,
                             label: const Text(
-                              'Recovery UI v2',
+                              'Recovery UI v3',
                             ),
                           ),
                         ],
@@ -1551,8 +1729,9 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
               height: 14,
             ),
             Text(
-              'Resume uses the local package recovery descriptor and the journal. '
-              'Repair and Clean remain disabled for now.',
+              'Resume continues an interrupted package. Clean permanently removes '
+              'only the Telegram messages recorded by an incomplete journal, then '
+              'deletes its local staging data. Repair remains disabled for now.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -1754,6 +1933,31 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
                   ),
                   label: const Text(
                     'Resume',
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _isBusy
+                      ? null
+                      : () => _cleanJournal(
+                            journal,
+                          ),
+                  icon: _cleaningPackageId ==
+                          journal.packageId
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.delete_sweep_outlined,
+                        ),
+                  label: Text(
+                    _cleaningPackageId ==
+                            journal.packageId
+                        ? 'Cleaning...'
+                        : 'Clean',
                   ),
                 ),
                 if (hasRecoveryDescriptor)
@@ -2586,7 +2790,9 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
           '✓ Mark uploads STORED / FAILED\n'
           '✓ List incomplete uploads from journal\n'
           '○ Update Gallery post after file upload\n'
-          '○ Resume / Repair / Clean',
+          '✓ Resume interrupted uploads\n'
+          '✓ Clean incomplete uploads\n'
+          '○ Repair journal against Telegram',
         ),
       ),
     );
