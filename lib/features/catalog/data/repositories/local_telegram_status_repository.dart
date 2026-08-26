@@ -17,86 +17,125 @@ class LocalTelegramStatusRepository
     TelegramStorageModelRegistryService? registryService,
     TelegramStorageVerificationService? verificationService,
   })  : identityService =
-            identityService ?? CatalogModelIdentityService.instance,
+            identityService ??
+                CatalogModelIdentityService.instance,
         registryService =
-            registryService ?? TelegramStorageModelRegistryService.instance,
+            registryService ??
+                TelegramStorageModelRegistryService.instance,
         verificationService =
-            verificationService ?? TelegramStorageVerificationService.instance;
+            verificationService ??
+                TelegramStorageVerificationService.instance;
 
   @override
-  Future<CatalogTelegramStatus> readLocalStatus(CatalogModel model) async {
-    final modelId = identityService.readModelId(model);
+  Future<CatalogTelegramStatus> readLocalStatus(
+    CatalogModel model,
+  ) async {
+    final modelId =
+        await identityService.readPersistedModelId(
+      model,
+    );
 
-    if (modelId == null || modelId.isEmpty) {
+    if (modelId == null ||
+        modelId.isEmpty) {
       return const CatalogTelegramStatus.notUploaded();
     }
 
-    final status = await registryService.getStatus(
+    final status =
+        await registryService.getStatus(
       model: model,
       modelId: modelId,
     );
 
-    return _mapJournal(status.journal);
+    return _mapJournal(
+      status.journal,
+    );
   }
 
   @override
-  Future<CatalogTelegramStatus> verifyStoredStatus(CatalogModel model) async {
-    final modelId = identityService.readModelId(model);
+  Future<CatalogTelegramStatus> verifyStoredStatus(
+    CatalogModel model,
+  ) async {
+    final modelId =
+        await identityService.readPersistedModelId(
+      model,
+    );
 
-    if (modelId == null || modelId.isEmpty) {
+    if (modelId == null ||
+        modelId.isEmpty) {
       return const CatalogTelegramStatus.notUploaded();
     }
 
-    var status = await registryService.getStatus(
+    var status =
+        await registryService.getStatus(
       model: model,
       modelId: modelId,
     );
 
-    final journal = status.journal;
+    final journal =
+        status.journal;
+
     if (journal == null) {
       return const CatalogTelegramStatus.notUploaded();
     }
 
     if (!journal.isStored) {
-      return _mapJournal(journal);
+      return _mapJournal(
+        journal,
+      );
     }
 
     try {
-      final verification = await verificationService.verifyAndUpdate(
+      final verification =
+          await verificationService.verifyAndUpdate(
         journal: journal,
       );
 
       if (verification.allPresent) {
         return CatalogTelegramStatus(
-          state: CatalogTelegramSyncState.uploaded,
-          packageId: journal.packageId,
-          remoteVerified: true,
+          state:
+              CatalogTelegramSyncState.uploaded,
+          packageId:
+              journal.packageId,
+          remoteVerified:
+              true,
         );
       }
 
-      status = await registryService.getStatus(
+      status =
+          await registryService.getStatus(
         model: model,
         modelId: modelId,
       );
 
-      final updatedJournal = status.journal;
-      if (verificationService.isRemoteMissingJournal(updatedJournal)) {
+      final updatedJournal =
+          status.journal;
+
+      if (verificationService
+          .isRemoteMissingJournal(
+        updatedJournal,
+      )) {
         return CatalogTelegramStatus(
-          state: CatalogTelegramSyncState.remoteMissing,
-          packageId: updatedJournal?.packageId ?? journal.packageId,
-          detail: updatedJournal?.lastError,
+          state:
+              CatalogTelegramSyncState.remoteMissing,
+          packageId:
+              updatedJournal?.packageId ??
+                  journal.packageId,
+          detail:
+              updatedJournal?.lastError,
         );
       }
 
-      return _mapJournal(updatedJournal);
+      return _mapJournal(
+        updatedJournal,
+      );
     } catch (error) {
-      // A connectivity/API failure must never turn a valid STORED journal
-      // into a missing package. We keep the local state and expose that the
-      // remote check could not be completed in this refresh.
       return CatalogTelegramStatus(
-        state: CatalogTelegramSyncState.verificationUnavailable,
-        packageId: journal.packageId,
-        detail: error.toString(),
+        state:
+            CatalogTelegramSyncState.verificationUnavailable,
+        packageId:
+            journal.packageId,
+        detail:
+            error.toString(),
       );
     }
   }
@@ -108,40 +147,61 @@ class LocalTelegramStatusRepository
       return const CatalogTelegramStatus.notUploaded();
     }
 
-    if (verificationService.isRemoteMissingJournal(journal)) {
+    if (verificationService
+        .isRemoteMissingJournal(
+      journal,
+    )) {
       return CatalogTelegramStatus(
-        state: CatalogTelegramSyncState.remoteMissing,
-        packageId: journal.packageId,
-        detail: journal.lastError,
+        state:
+            CatalogTelegramSyncState.remoteMissing,
+        packageId:
+            journal.packageId,
+        detail:
+            journal.lastError,
       );
     }
 
     switch (journal.status) {
       case TelegramStorageUploadStatus.preparing:
         return CatalogTelegramStatus(
-          state: CatalogTelegramSyncState.preparing,
-          packageId: journal.packageId,
+          state:
+              CatalogTelegramSyncState.preparing,
+          packageId:
+              journal.packageId,
         );
+
       case TelegramStorageUploadStatus.uploading:
         return CatalogTelegramStatus(
-          state: CatalogTelegramSyncState.uploading,
-          packageId: journal.packageId,
+          state:
+              CatalogTelegramSyncState.uploading,
+          packageId:
+              journal.packageId,
         );
+
       case TelegramStorageUploadStatus.failed:
         return CatalogTelegramStatus(
-          state: CatalogTelegramSyncState.failed,
-          packageId: journal.packageId,
-          detail: journal.lastError,
+          state:
+              CatalogTelegramSyncState.failed,
+          packageId:
+              journal.packageId,
+          detail:
+              journal.lastError,
         );
+
       case TelegramStorageUploadStatus.stored:
         return CatalogTelegramStatus(
-          state: CatalogTelegramSyncState.uploaded,
-          packageId: journal.packageId,
+          state:
+              CatalogTelegramSyncState.uploaded,
+          packageId:
+              journal.packageId,
         );
+
       case TelegramStorageUploadStatus.removing:
         return CatalogTelegramStatus(
-          state: CatalogTelegramSyncState.removing,
-          packageId: journal.packageId,
+          state:
+              CatalogTelegramSyncState.removing,
+          packageId:
+              journal.packageId,
         );
     }
   }
