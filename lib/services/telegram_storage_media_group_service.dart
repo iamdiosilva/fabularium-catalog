@@ -500,7 +500,7 @@ Future<void>
      * fallback conservador já validado: quatro requests
      * concorrentes sobre a conexão principal.
      *
-     * Assim a Performance V3 nunca transforma um
+     * Assim a Performance V4 nunca transforma um
      * problema do pool em falha do package inteiro.
      */
     if (hasLargeFile) {
@@ -570,9 +570,8 @@ Future<void>
     final randomIds =
         <int>[];
 
-    final transferWatch =
-        Stopwatch()
-          ..start();
+    final transferRateTracker =
+        _TransferRateTracker();
 
     for (int index = 0;
         index <
@@ -648,9 +647,8 @@ Future<void>
                   0.88;
 
           final rate =
-              _formatTransferRate(
+              transferRateTracker.format(
             totalUploaded,
-            transferWatch.elapsed,
           );
 
           final connectionLabel =
@@ -760,9 +758,8 @@ Future<void>
           fileSize;
 
       final rate =
-          _formatTransferRate(
+          transferRateTracker.format(
         completedBytes,
-        transferWatch.elapsed,
       );
 
       _sendProgress(
@@ -957,11 +954,10 @@ Future<t.InputFileBase>
   }
 
   /*
-   * Telegram recommends 512 KB parts.
+   * Telegram upload parts stay at 512 KB.
    *
-   * The important optimization is not a larger
-   * part, but keeping multiple save-part RPCs
-   * active at the same time.
+   * Performance V4 changes the scheduler,
+   * not the Telegram part size.
    */
   const int partSize =
       512 *
@@ -974,18 +970,16 @@ Future<t.InputFileBase>
   }
 
   /*
-   * One part per independent MTProto connection.
+   * Sliding-window worker pool.
    *
-   * With the V2 pool this normally means:
+   * Every worker owns one active upload client.
+   * As soon as a worker finishes one part, it
+   * immediately claims the next available part.
    *
-   *   8 sockets x 512 KB
-   *
-   * = about 4 MB of file data in flight.
-   *
-   * Each save-part RPC goes through its own
-   * tg.Client/socket whenever the pool is active.
+   * There is no Future.wait barrier every 8
+   * parts anymore.
    */
-  final int maxConcurrentParts =
+  final int workerCount =
       min<int>(
     8,
     uploadClients.length,
@@ -1008,34 +1002,52 @@ Future<t.InputFileBase>
   final fileId =
       _random64();
 
-  RandomAccessFile? input;
+  int nextPart =
+      0;
 
-  try {
-    input =
-        await file.open(
-      mode:
-          FileMode.read,
-    );
+  int uploaded =
+      0;
 
-    int nextPart =
-        0;
+  Future<void> runWorker(
+    int workerIndex,
+  ) async {
+    final client =
+        uploadClients[
+          workerIndex %
+              uploadClients.length
+        ];
 
-    int uploaded =
-        0;
+    RandomAccessFile? input;
 
-    while (nextPart <
-        totalParts) {
-      final operations =
-          <Future<void>>[];
+    try {
+      /*
+       * Each worker has its own file handle.
+       *
+       * This lets workers seek/read independent
+       * parts without sharing RandomAccessFile
+       * position state.
+       */
+      input =
+          await file.open(
+        mode:
+            FileMode.read,
+      );
 
-      for (int slot = 0;
-          slot <
-                  maxConcurrentParts &&
-              nextPart <
-                  totalParts;
-          slot++) {
+      while (true) {
+        /*
+         * Dart executes this synchronous section
+         * atomically until the next await.
+         *
+         * Workers therefore claim unique indexes
+         * from the shared nextPart counter.
+         */
         final partIndex =
             nextPart;
+
+        if (partIndex >=
+            totalParts) {
+          break;
+        }
 
         nextPart++;
 
@@ -1053,31 +1065,27 @@ Future<t.InputFileBase>
           remaining,
         );
 
+        await input.setPosition(
+          expectedOffset,
+        );
+
         final bytes =
             await input.read(
           readLength,
         );
 
-        if (bytes.isEmpty) {
+        if (bytes.length !=
+            readLength) {
           throw Exception(
-            'Unexpected EOF while '
-            'uploading $fileName.',
+            'Unexpected EOF while uploading '
+            '$fileName at part '
+            '${partIndex + 1}/$totalParts.',
           );
         }
 
-        final byteCount =
-            bytes.length;
-
-        final uploadClient =
-            uploadClients[
-              partIndex %
-                  uploadClients.length
-            ];
-
-        final operation =
-            _saveFilePart(
+        await _saveFilePart(
           client:
-              uploadClient,
+              client,
           isBig:
               isBig,
           fileId:
@@ -1090,38 +1098,40 @@ Future<t.InputFileBase>
               bytes,
           fileName:
               fileName,
-        ).then(
-          (_) {
-            uploaded +=
-                byteCount;
-
-            onBytesUploaded(
-              uploaded,
-            );
-          },
         );
 
-        operations.add(
-          operation,
+        uploaded +=
+            bytes.length;
+
+        onBytesUploaded(
+          uploaded,
         );
       }
-
-      await Future.wait(
-        operations,
-      );
+    } finally {
+      try {
+        await input?.close();
+      } catch (_) {}
     }
+  }
 
-    if (uploaded !=
-        size) {
-      throw Exception(
-        'Upload byte count mismatch for '
-        '$fileName: $uploaded/$size.',
-      );
-    }
-  } finally {
-    try {
-      await input?.close();
-    } catch (_) {}
+  await Future.wait(
+    List<Future<void>>.generate(
+      workerCount,
+      (
+        workerIndex,
+      ) =>
+          runWorker(
+        workerIndex,
+      ),
+    ),
+  );
+
+  if (uploaded !=
+      size) {
+    throw Exception(
+      'Upload byte count mismatch for '
+      '$fileName: $uploaded/$size.',
+    );
   }
 
   if (isBig) {
@@ -1482,30 +1492,132 @@ int _random64() {
       : value;
 }
 
-String? _formatTransferRate(
-  int uploadedBytes,
-  Duration elapsed,
-) {
-  final milliseconds =
-      elapsed.inMilliseconds;
-
-  if (uploadedBytes <=
-          0 ||
-      milliseconds <
-          250) {
-    return null;
-  }
-
-  final seconds =
-      milliseconds /
+class _TransferRateTracker {
+  /*
+   * Two seconds is long enough to smooth individual
+   * 512 KB completion bursts, but short enough to
+   * expose real pauses and throughput changes.
+   */
+  static const int _windowMicroseconds =
+      2 *
+      1000 *
       1000;
 
-  final bytesPerSecond =
-      uploadedBytes /
-      seconds;
+  final Stopwatch _watch =
+      Stopwatch()
+        ..start();
+
+  final List<_TransferRateSample> _samples =
+      <_TransferRateSample>[];
+
+  String? format(
+    int totalBytes,
+  ) {
+    final elapsedMicroseconds =
+        _watch.elapsedMicroseconds;
+
+    if (totalBytes <=
+            0 ||
+        elapsedMicroseconds <
+            250000) {
+      return null;
+    }
+
+    _samples.add(
+      _TransferRateSample(
+        microseconds:
+            elapsedMicroseconds,
+        bytes:
+            totalBytes,
+      ),
+    );
+
+    final cutoff =
+        elapsedMicroseconds -
+        _windowMicroseconds;
+
+    /*
+     * Keep one sample immediately before the
+     * rolling window when possible. That gives
+     * us a stable delta close to two seconds.
+     */
+    while (_samples.length >
+            2 &&
+        _samples[1]
+                .microseconds <=
+            cutoff) {
+      _samples.removeAt(
+        0,
+      );
+    }
+
+    final averageSeconds =
+        elapsedMicroseconds /
+        1000000;
+
+    final averageBytesPerSecond =
+        totalBytes /
+        averageSeconds;
+
+    double currentBytesPerSecond =
+        averageBytesPerSecond;
+
+    if (_samples.length >=
+        2) {
+      final first =
+          _samples.first;
+
+      final last =
+          _samples.last;
+
+      final deltaMicroseconds =
+          last.microseconds -
+          first.microseconds;
+
+      final deltaBytes =
+          last.bytes -
+          first.bytes;
+
+      if (deltaMicroseconds >
+              0 &&
+          deltaBytes >=
+              0) {
+        currentBytesPerSecond =
+            deltaBytes /
+            (
+              deltaMicroseconds /
+              1000000
+            );
+      }
+    }
+
+    return 'Current ${_formatTransferRateValue(currentBytesPerSecond)}'
+        ' • Avg ${_formatTransferRateValue(averageBytesPerSecond)}';
+  }
+}
+
+class _TransferRateSample {
+  final int microseconds;
+
+  final int bytes;
+
+  const _TransferRateSample({
+    required this.microseconds,
+    required this.bytes,
+  });
+}
+
+String _formatTransferRateValue(
+  double bytesPerSecond,
+) {
+  final safeBytesPerSecond =
+      max<double>(
+    0,
+    bytesPerSecond,
+  );
 
   final bitsPerSecond =
-      bytesPerSecond *
+      safeBytesPerSecond *
       8;
 
   const bytesPerMb =
@@ -1516,38 +1628,35 @@ String? _formatTransferRate(
       1000 *
       1000;
 
-  if (bytesPerSecond >=
+  final megabitsPerSecond =
+      bitsPerSecond /
+      bitsPerMbps;
+
+  if (safeBytesPerSecond >=
       bytesPerMb) {
     final megabytesPerSecond =
-        bytesPerSecond /
+        safeBytesPerSecond /
         bytesPerMb;
 
-    final megabitsPerSecond =
-        bitsPerSecond /
-        bitsPerMbps;
-
     return '${megabytesPerSecond.toStringAsFixed(2)} MB/s'
-        ' • ${megabitsPerSecond.toStringAsFixed(1)} Mbps';
+        ' (${megabitsPerSecond.toStringAsFixed(1)} Mbps)';
   }
 
   const bytesPerKb =
       1024;
 
-  if (bytesPerSecond >=
+  if (safeBytesPerSecond >=
       bytesPerKb) {
     final kilobytesPerSecond =
-        bytesPerSecond /
+        safeBytesPerSecond /
         bytesPerKb;
 
-    final megabitsPerSecond =
-        bitsPerSecond /
-        bitsPerMbps;
-
     return '${kilobytesPerSecond.toStringAsFixed(0)} KB/s'
-        ' • ${megabitsPerSecond.toStringAsFixed(2)} Mbps';
+        ' (${megabitsPerSecond.toStringAsFixed(2)} Mbps)';
   }
 
-  return '${bytesPerSecond.toStringAsFixed(0)} B/s';
+  return '${safeBytesPerSecond.toStringAsFixed(0)} B/s'
+      ' (${megabitsPerSecond.toStringAsFixed(3)} Mbps)';
 }
 
 void _sendProgress(
