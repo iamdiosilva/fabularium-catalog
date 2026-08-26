@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -92,6 +93,11 @@ class _ModelDetailsPageState
 
   bool _isStorageBusy =
       false;
+
+  _ModelStorageRuntimeStatus?
+      _runtimeStorageStatus;
+
+  String? _activeStoragePackageId;
 
   double _storageProgress =
       0;
@@ -318,6 +324,38 @@ class _ModelDetailsPageState
     }
   }
 
+  Future<void> _refreshStorageStatusWithoutLoading() async {
+    if (_modelId.isEmpty) {
+      return;
+    }
+
+    try {
+      final status =
+          await _storageRegistry.getStatus(
+        model:
+            _model,
+        modelId:
+            _modelId,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _storageStatus =
+            status;
+      });
+    } catch (_) {
+      /*
+       * Real-time sync is best-effort.
+       *
+       * The main upload operation owns error
+       * reporting and recovery persistence.
+       */
+    }
+  }
+
   Future<void> _openStorageSettings() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -446,6 +484,10 @@ class _ModelDetailsPageState
     setState(() {
       _isStorageBusy =
           true;
+      _runtimeStorageStatus =
+          _ModelStorageRuntimeStatus.preparing;
+      _activeStoragePackageId =
+          null;
       _storageProgress =
           0;
       _storageStage =
@@ -507,11 +549,18 @@ class _ModelDetailsPageState
       }
 
       setState(() {
+        _runtimeStorageStatus =
+            _ModelStorageRuntimeStatus.uploading;
+        _activeStoragePackageId =
+            package?.packageId;
         _storageProgress =
             0.35;
         _storageStage =
             'Starting Telegram upload...';
       });
+
+      bool journalSynced =
+          false;
 
       final result =
           await _packageUploader
@@ -526,6 +575,15 @@ class _ModelDetailsPageState
         ) {
           if (!mounted) {
             return;
+          }
+
+          if (!journalSynced) {
+            journalSynced =
+                true;
+
+            unawaited(
+              _refreshStorageStatusWithoutLoading(),
+            );
           }
 
           setState(() {
@@ -546,6 +604,8 @@ class _ModelDetailsPageState
       }
 
       setState(() {
+        _runtimeStorageStatus =
+            null;
         _storageProgress =
             1;
         _storageStage =
@@ -561,6 +621,11 @@ class _ModelDetailsPageState
         return;
       }
 
+      setState(() {
+        _activeStoragePackageId =
+            null;
+      });
+
       _showMessage(
         result.alreadyUploaded
             ? 'The model was already stored. Nothing was duplicated.'
@@ -573,6 +638,8 @@ class _ModelDetailsPageState
       }
 
       setState(() {
+        _runtimeStorageStatus =
+            null;
         _storageError =
             e.toString();
         _storageStage =
@@ -587,6 +654,11 @@ class _ModelDetailsPageState
       if (!mounted) {
         return;
       }
+
+      setState(() {
+        _activeStoragePackageId =
+            null;
+      });
 
       _showMessage(
         'Telegram Storage upload interrupted. '
@@ -666,7 +738,36 @@ class _ModelDetailsPageState
     );
   }
 
+  String _storageStatusLabel() {
+    final runtime =
+        _runtimeStorageStatus;
+
+    if (runtime ==
+        _ModelStorageRuntimeStatus.preparing) {
+      return 'PREPARING';
+    }
+
+    if (runtime ==
+        _ModelStorageRuntimeStatus.uploading) {
+      return 'UPLOADING';
+    }
+
+    return _storageStatus
+            ?.telegramStatusLabel ??
+        'UNKNOWN';
+  }
+
   String _storageStatusDescription() {
+    if (_runtimeStorageStatus ==
+        _ModelStorageRuntimeStatus.preparing) {
+      return 'Fabularium is preparing the local Storage V3 package.';
+    }
+
+    if (_runtimeStorageStatus ==
+        _ModelStorageRuntimeStatus.uploading) {
+      return 'This model is currently being uploaded to Telegram Storage.';
+    }
+
     final status =
         _storageStatus;
 
@@ -1767,9 +1868,7 @@ class _ModelDetailsPageState
                   Chip(
                     label:
                         Text(
-                      status
-                              ?.telegramStatusLabel ??
-                          'UNKNOWN',
+                      _storageStatusLabel(),
                     ),
                   ),
               ],
@@ -1822,6 +1921,22 @@ class _ModelDetailsPageState
               ),
               SelectableText(
                 'Model ID: $_modelId',
+                style:
+                    Theme.of(context)
+                        .textTheme
+                        .bodySmall,
+              ),
+            ],
+            if (_activeStoragePackageId !=
+                    null &&
+                journal ==
+                    null) ...[
+              const Divider(
+                height:
+                    24,
+              ),
+              SelectableText(
+                'Package ID: $_activeStoragePackageId',
                 style:
                     Theme.of(context)
                         .textTheme
@@ -1966,13 +2081,24 @@ class _ModelDetailsPageState
                       'Configure Storage',
                     ),
                   )
+                else if (_isStorageBusy)
+                  const Chip(
+                    avatar:
+                        Icon(
+                      Icons.cloud_upload_outlined,
+                      size:
+                          18,
+                    ),
+                    label:
+                        Text(
+                      'Upload in Progress',
+                    ),
+                  )
                 else if (status?.journal ==
                     null)
                   FilledButton.icon(
                     onPressed:
-                        _isStorageBusy
-                            ? null
-                            : _uploadModelToTelegram,
+                        _uploadModelToTelegram,
                     icon:
                         const Icon(
                       Icons.cloud_upload_outlined,
@@ -2033,8 +2159,9 @@ class _ModelDetailsPageState
             Text(
               'modelId is persistent in this model config.json and is also '
               'stored in new Telegram manifests. Large uploads use up to '
-              'eight parallel MTProto connections with 512 KB parts. Repair '
-              'will later verify message IDs directly against Telegram.',
+              'twelve parallel MTProto connections with a continuous '
+              '512 KB sliding-window scheduler. Repair will later verify '
+              'message IDs directly against Telegram.',
               style:
                   Theme.of(context)
                       .textTheme
@@ -2276,6 +2403,11 @@ class _ModelDetailsPageState
         return type;
     }
   }
+}
+
+enum _ModelStorageRuntimeStatus {
+  preparing,
+  uploading,
 }
 
 class _InfoRow

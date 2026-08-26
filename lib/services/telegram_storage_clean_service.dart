@@ -313,9 +313,9 @@ class TelegramStorageCleanService {
         priority: Isolate.immediate,
       );
 
-      await eventSubscription?.cancel();
-      await errorSubscription?.cancel();
-      await exitSubscription?.cancel();
+      await eventSubscription.cancel();
+      await errorSubscription.cancel();
+      await exitSubscription.cancel();
 
       eventPort.close();
       errorPort.close();

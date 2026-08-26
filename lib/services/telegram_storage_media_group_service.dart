@@ -493,14 +493,14 @@ Future<void>
         1;
 
     /*
-     * Arquivos grandes tentam usar oito sessões
+     * Arquivos grandes tentam usar doze sessões
      * MTProto independentes.
      *
      * Se o pool não puder ser aberto, mantemos o
      * fallback conservador já validado: quatro requests
      * concorrentes sobre a conexão principal.
      *
-     * Assim a Performance V4 nunca transforma um
+     * Assim a Performance V5 nunca transforma um
      * problema do pool em falha do package inteiro.
      */
     if (hasLargeFile) {
@@ -516,7 +516,7 @@ Future<void>
       _sendProgress(
         eventPort,
         0,
-        'Opening 8 Telegram upload connections...',
+        'Opening 12 Telegram upload connections...',
       );
 
       uploadPool =
@@ -528,7 +528,7 @@ Future<void>
       try {
         await uploadPool.open(
           size:
-              8,
+              12,
         );
 
         uploadClients
@@ -547,7 +547,7 @@ Future<void>
         );
       } catch (_) {
         try {
-          await uploadPool?.close();
+          await uploadPool.close();
         } catch (_) {}
 
         uploadPool =
@@ -976,12 +976,15 @@ Future<t.InputFileBase>
    * As soon as a worker finishes one part, it
    * immediately claims the next available part.
    *
-   * There is no Future.wait barrier every 8
-   * parts anymore.
+   * Performance V5 uses up to 12 independent
+   * workers/sockets for large files.
+   *
+   * There is no Future.wait barrier between
+   * fixed-size batches.
    */
   final int workerCount =
       min<int>(
-    8,
+    12,
     uploadClients.length,
   );
 
