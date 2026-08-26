@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -7,6 +8,7 @@ import '../models/telegram_storage_channel.dart';
 import '../models/telegram_storage_package.dart';
 import '../models/telegram_storage_upload_journal.dart';
 import '../models/telegram_storage_workspace.dart';
+import '../services/telegram_storage_package_recovery_service.dart';
 import '../services/telegram_storage_package_uploader.dart';
 import '../services/telegram_storage_packager.dart';
 import '../services/telegram_storage_service.dart';
@@ -39,6 +41,9 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
 
   final TelegramStoragePackageUploader _packageUploader =
       TelegramStoragePackageUploader.instance;
+
+  final TelegramStoragePackageRecoveryService _packageRecoveryService =
+      TelegramStoragePackageRecoveryService.instance;
 
   final TelegramStorageUploadJournalService _journalService =
       TelegramStorageUploadJournalService.instance;
@@ -610,6 +615,213 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
   }
 
   // ============================================================
+  // RESUME JOURNAL
+  // ============================================================
+
+  Future<void> _resumeJournal(
+    TelegramStorageUploadJournal journal,
+  ) async {
+    if (_isBusy ||
+        journal.isRemoving) {
+      return;
+    }
+
+    if (!_packageRecoveryService
+        .hasRecoveryDescriptor(
+      journal,
+    )) {
+      setState(() {
+        _error =
+            'This journal does not have a local recovery descriptor. '
+            'It was probably created before Resume support was added.';
+      });
+
+      return;
+    }
+
+    setState(() {
+      _error = null;
+      _status =
+          'Loading recovery package for ${journal.modelName}...';
+    });
+
+    try {
+      final package =
+          await _packageRecoveryService
+              .loadForJournal(
+        journal,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      final confirmed =
+          await showDialog<bool>(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text(
+              'Resume Storage Upload?',
+            ),
+            content: Text(
+              '${journal.modelName}\n\n'
+              'Status: ${_journalStatusLabel(journal.status)}\n'
+              'Gallery messages: ${journal.galleryMessageIds.length}\n'
+              'Completed file groups: ${journal.fileGroups.length}\n'
+              'Manifest: ${journal.manifestMessageId ?? '-'}\n\n'
+              'The upload will continue using the original channels:\n'
+              'Catalog: ${journal.catalogChannel.title}\n'
+              'Files: ${journal.filesChannel.title}\n\n'
+              'Groups already recorded in the journal will not be '
+              'uploaded again.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(
+                    context,
+                  ).pop(
+                    false,
+                  );
+                },
+                child: const Text(
+                  'Cancel',
+                ),
+              ),
+              FilledButton.icon(
+                onPressed: () {
+                  Navigator.of(
+                    context,
+                  ).pop(
+                    true,
+                  );
+                },
+                icon: const Icon(
+                  Icons.play_arrow_outlined,
+                ),
+                label: const Text(
+                  'Resume',
+                ),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (confirmed != true) {
+        setState(() {
+          _status = null;
+        });
+
+        return;
+      }
+
+      final recoveryWorkspace =
+          TelegramStorageWorkspace(
+        catalogChannel:
+            journal.catalogChannel,
+        filesChannel:
+            journal.filesChannel,
+      );
+
+      setState(() {
+        _preparedPackage =
+            package;
+        _isUploadingPackage =
+            true;
+        _packageUploadProgress =
+            0;
+        _packageUploadStage =
+            'Resuming package upload...';
+        _packageUploadFileName =
+            null;
+        _lastPackageUpload =
+            null;
+        _error =
+            null;
+        _status =
+            null;
+      });
+
+      bool recoveryCardSynced = false;
+
+      final result =
+          await _packageUploader
+              .uploadPackage(
+        workspace:
+            recoveryWorkspace,
+        package:
+            package,
+        onProgress: (progress) {
+          if (!mounted) {
+            return;
+          }
+
+          if (!recoveryCardSynced) {
+            recoveryCardSynced = true;
+
+            unawaited(
+              _loadIncompleteJournals(),
+            );
+          }
+
+          setState(() {
+            _packageUploadProgress =
+                progress.overallProgress;
+            _packageUploadStage =
+                progress.stage;
+            _packageUploadFileName =
+                progress.currentFileName;
+          });
+        },
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isUploadingPackage =
+            false;
+        _packageUploadProgress =
+            1;
+        _packageUploadStage =
+            'Recovery completed successfully.';
+        _lastPackageUpload =
+            result;
+        _status =
+            result.alreadyUploaded
+                ? 'The journal was already complete. Nothing was duplicated.'
+                : 'Upload resumed successfully. Manifest message ID: '
+                    '${result.manifestMessageId}.';
+      });
+
+      await _loadIncompleteJournals();
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isUploadingPackage =
+            false;
+        _error =
+            e.toString();
+        _status =
+            'Resume stopped. Completed groups remain persisted '
+            'in the Storage V3 journal.';
+      });
+
+      await _loadIncompleteJournals();
+    }
+  }
+
+  // ============================================================
   // TEST UPLOAD
   // ============================================================
 
@@ -766,6 +978,10 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
         },
       );
 
+      await _packageRecoveryService.savePackage(
+        package,
+      );
+
       if (!mounted) {
         return;
       }
@@ -879,6 +1095,8 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
     });
 
     try {
+      bool recoveryCardSynced = false;
+
       final result =
           await _packageUploader
               .uploadPackage(
@@ -887,6 +1105,14 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
         onProgress: (progress) {
           if (!mounted) {
             return;
+          }
+
+          if (!recoveryCardSynced) {
+            recoveryCardSynced = true;
+
+            unawaited(
+              _loadIncompleteJournals(),
+            );
           }
 
           setState(() {
@@ -1207,7 +1433,7 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
                           Chip(
                             visualDensity: VisualDensity.compact,
                             label: const Text(
-                              'Recovery UI v1',
+                              'Recovery UI v2',
                             ),
                           ),
                         ],
@@ -1325,8 +1551,8 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
               height: 14,
             ),
             Text(
-              'Resume, Repair and Clean will use these journals. '
-              'No recovery action is executed automatically.',
+              'Resume uses the local package recovery descriptor and the journal. '
+              'Repair and Clean remain disabled for now.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -1340,6 +1566,12 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
   ) {
     final fileMessageCount =
         _publishedFileMessageCount(journal);
+
+    final hasRecoveryDescriptor =
+        _packageRecoveryService
+            .hasRecoveryDescriptor(
+      journal,
+    );
 
     return Padding(
       padding: const EdgeInsets.symmetric(
@@ -1501,6 +1733,49 @@ class _TelegramStoragePageState extends State<TelegramStoragePage> {
                 ),
               ),
             ],
+            const SizedBox(
+              height: 14,
+            ),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                FilledButton.icon(
+                  onPressed: _isBusy ||
+                          journal.isRemoving ||
+                          !hasRecoveryDescriptor
+                      ? null
+                      : () => _resumeJournal(
+                            journal,
+                          ),
+                  icon: const Icon(
+                    Icons.play_arrow_outlined,
+                  ),
+                  label: const Text(
+                    'Resume',
+                  ),
+                ),
+                if (hasRecoveryDescriptor)
+                  const Chip(
+                    visualDensity: VisualDensity.compact,
+                    avatar: Icon(
+                      Icons.save_outlined,
+                      size: 16,
+                    ),
+                    label: Text(
+                      'Recovery package available',
+                    ),
+                  )
+                else
+                  Text(
+                    'Resume unavailable: no recovery descriptor.',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall,
+                  ),
+              ],
+            ),
           ],
         ),
       ),
