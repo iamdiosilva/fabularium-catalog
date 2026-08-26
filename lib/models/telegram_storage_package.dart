@@ -1,3 +1,60 @@
+import 'package:path/path.dart' as p;
+
+class TelegramStorageCatalogInfo {
+  final String name;
+
+  final String? studio;
+
+  final String? category;
+
+  final String? type;
+
+  final String? scale;
+
+  final String? height;
+
+  final String? description;
+
+  final List<String> tags;
+
+  final List<String> galleryImagePaths;
+
+  const TelegramStorageCatalogInfo({
+    required this.name,
+    required this.studio,
+    required this.category,
+    required this.type,
+    required this.scale,
+    required this.height,
+    required this.description,
+    required this.tags,
+    required this.galleryImagePaths,
+  });
+
+  int get galleryImageCount =>
+      galleryImagePaths.length;
+
+  List<String> get galleryFileNames =>
+      galleryImagePaths
+          .map(
+            p.basename,
+          )
+          .toList();
+
+  Map<String, dynamic> toManifestJson() {
+    return <String, dynamic>{
+      'name': name,
+      'studio': studio,
+      'category': category,
+      'type': type,
+      'scale': scale,
+      'height': height,
+      'description': description,
+      'tags': tags,
+    };
+  }
+}
+
 class TelegramStoragePackagePart {
   final int index;
 
@@ -17,15 +74,12 @@ class TelegramStoragePackagePart {
     required this.sha256,
   });
 
-  Map<String, dynamic> toManifestJson({
-    int? messageId,
-  }) {
+  Map<String, dynamic> toManifestJson() {
     return <String, dynamic>{
       'index': index,
       'fileName': fileName,
       'size': size,
       'sha256': sha256,
-      'messageId': messageId,
     };
   }
 }
@@ -34,6 +88,12 @@ class TelegramStoragePackage {
   final String packageId;
 
   final String sourceFolderName;
+
+  /*
+   * Mantido opcional para compatibilidade
+   * com packages criados pela versão anterior.
+   */
+  final String sourceFolderPath;
 
   final int sourceSize;
 
@@ -51,9 +111,16 @@ class TelegramStoragePackage {
 
   final List<TelegramStoragePackagePart> parts;
 
+  /*
+   * Também opcional para manter compatibilidade
+   * com construções anteriores do model.
+   */
+  final TelegramStorageCatalogInfo? catalog;
+
   const TelegramStoragePackage({
     required this.packageId,
     required this.sourceFolderName,
+    this.sourceFolderPath = '',
     required this.sourceSize,
     required this.archiveFileName,
     required this.archiveSize,
@@ -62,6 +129,7 @@ class TelegramStoragePackage {
     required this.manifestPath,
     required this.createdAt,
     required this.parts,
+    this.catalog,
   });
 
   bool get isSplit =>
@@ -69,6 +137,17 @@ class TelegramStoragePackage {
 
   int get partCount =>
       parts.length;
+
+  String get displayName =>
+      catalog?.name ??
+      sourceFolderName;
+
+  List<String> get galleryImagePaths =>
+      catalog?.galleryImagePaths ??
+      const <String>[];
+
+  int get galleryImageCount =>
+      galleryImagePaths.length;
 
   int get totalUploadSize {
     int result = 0;
@@ -80,14 +159,26 @@ class TelegramStoragePackage {
     return result;
   }
 
+  /*
+   * STORAGE MANIFEST V2
+   *
+   * O manifest na nuvem é independente dos
+   * messageIds do Telegram.
+   *
+   * Isso permite que ele seja enviado junto
+   * com os documentos através de sendMultiMedia.
+   *
+   * Os IDs reais ficam no upload receipt local.
+   */
   Map<String, dynamic> toManifestJson({
     int? channelId,
     String? channelTitle,
-    Map<int, int?> messageIds =
-        const <int, int?>{},
   }) {
+    final catalogInfo =
+        catalog;
+
     return <String, dynamic>{
-      'version': 1,
+      'version': 2,
       'kind':
           'fabularium-storage-package',
       'packageId':
@@ -96,13 +187,33 @@ class TelegramStoragePackage {
           createdAt
               .toUtc()
               .toIso8601String(),
-      'source': <String, dynamic>{
+
+      'catalog':
+          catalogInfo?.toManifestJson() ??
+              <String, dynamic>{
+                'name':
+                    sourceFolderName,
+              },
+
+      'gallery':
+          <String, dynamic>{
+        'count':
+            galleryImageCount,
+        'files':
+            catalogInfo?.galleryFileNames ??
+                const <String>[],
+      },
+
+      'source':
+          <String, dynamic>{
         'folderName':
             sourceFolderName,
         'size':
             sourceSize,
       },
-      'archive': <String, dynamic>{
+
+      'archive':
+          <String, dynamic>{
         'fileName':
             archiveFileName,
         'size':
@@ -114,22 +225,22 @@ class TelegramStoragePackage {
         'partCount':
             partCount,
       },
-      'telegram': <String, dynamic>{
+
+      'telegram':
+          <String, dynamic>{
         'channelId':
             channelId,
         'channelTitle':
             channelTitle,
       },
+
       'parts':
           parts
               .map(
-                (part) =>
-                    part.toManifestJson(
-                  messageId:
-                      messageIds[
-                        part.index
-                      ],
-                ),
+                (
+                  part,
+                ) =>
+                    part.toManifestJson(),
               )
               .toList(),
     };

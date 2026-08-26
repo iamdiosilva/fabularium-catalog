@@ -15,27 +15,17 @@ typedef TelegramStoragePackageProgress =
 class TelegramStoragePackager {
   TelegramStoragePackager._();
 
-  static final TelegramStoragePackager
-      instance =
+  static final TelegramStoragePackager instance =
       TelegramStoragePackager._();
 
-  /*
-   * Mesmo limite utilizado pelo upload.
-   *
-   * Mantemos margem segura abaixo dos
-   * aproximadamente 2 GB.
-   */
   static const int maxPartBytes =
       1900 * 1024 * 1024;
 
-  /*
-   * Buffer usado ao dividir arquivos.
-   *
-   * Nunca carregamos um ZIP gigante inteiro
-   * na memória.
-   */
   static const int _splitBufferBytes =
       8 * 1024 * 1024;
+
+  static const int maxGalleryImages =
+      10;
 
   // ============================================================
   // PREPARE FOLDER
@@ -92,6 +82,18 @@ class TelegramStoragePackager {
 
     _report(
       onProgress,
+      0.01,
+      'Reading catalog information...',
+    );
+
+    final catalog =
+        await _readCatalogInfo(
+      sourceDirectory,
+      folderName,
+    );
+
+    _report(
+      onProgress,
       0.02,
       'Scanning model folder...',
     );
@@ -112,7 +114,7 @@ class TelegramStoragePackager {
 
     final safeFolderName =
         _sanitizeName(
-      folderName,
+      catalog.name,
     );
 
     final stagingDirectory =
@@ -156,14 +158,11 @@ class TelegramStoragePackager {
             (
           value,
         ) {
-          /*
-           * Compressão ocupa aproximadamente
-           * 5% -> 70% do progresso total.
-           */
           final mapped =
               0.05 +
                   (
-                    value * 0.65
+                    value *
+                        0.65
                   );
 
           _report(
@@ -190,7 +189,7 @@ class TelegramStoragePackager {
       }
 
       // ========================================================
-      // ARCHIVE SHA256
+      // ARCHIVE SHA
       // ========================================================
 
       _report(
@@ -213,12 +212,6 @@ class TelegramStoragePackager {
 
       if (archiveSize <=
           maxPartBytes) {
-        _report(
-          onProgress,
-          0.9,
-          'Preparing package manifest...',
-        );
-
         parts.add(
           TelegramStoragePackagePart(
             index:
@@ -265,9 +258,6 @@ class TelegramStoragePackager {
                     : copied /
                         total;
 
-            /*
-             * Split ocupa 75% -> 87%.
-             */
             _report(
               onProgress,
               0.75 +
@@ -315,7 +305,7 @@ class TelegramStoragePackager {
             ),
           );
 
-          final hashRatio =
+          final ratio =
               (
                 index + 1
               ) /
@@ -325,7 +315,7 @@ class TelegramStoragePackager {
             onProgress,
             0.88 +
                 (
-                  hashRatio *
+                  ratio *
                       0.07
                 ),
             'Calculating part checksums '
@@ -334,14 +324,8 @@ class TelegramStoragePackager {
         }
 
         /*
-         * A partir daqui as partes são a
-         * representação persistida do ZIP.
-         *
-         * O ZIP original já teve seu SHA-256
-         * calculado e não é mais necessário.
-         *
-         * Removê-lo evita manter duas cópias
-         * gigantes no staging.
+         * Depois da divisão o ZIP completo não
+         * precisa permanecer ocupando espaço.
          */
         await archiveFile.delete();
       }
@@ -377,6 +361,8 @@ class TelegramStoragePackager {
             packageId,
         sourceFolderName:
             folderName,
+        sourceFolderPath:
+            sourceDirectory.path,
         sourceSize:
             sourceSize,
         archiveFileName:
@@ -393,6 +379,8 @@ class TelegramStoragePackager {
             createdAt,
         parts:
             parts,
+        catalog:
+            catalog,
       );
 
       await writeManifest(
@@ -407,11 +395,6 @@ class TelegramStoragePackager {
 
       return package;
     } catch (_) {
-      /*
-       * Não deixamos ZIPs ou partes gigantes
-       * incompletos no disco caso a preparação
-       * falhe.
-       */
       try {
         if (await stagingDirectory.exists()) {
           await stagingDirectory.delete(
@@ -426,6 +409,291 @@ class TelegramStoragePackager {
   }
 
   // ============================================================
+  // CATALOG
+  // ============================================================
+
+  Future<TelegramStorageCatalogInfo>
+      _readCatalogInfo(
+    Directory directory,
+    String fallbackName,
+  ) async {
+    final configFile =
+        File(
+      p.join(
+        directory.path,
+        'config.json',
+      ),
+    );
+
+    Map<String, dynamic> config =
+        <String, dynamic>{};
+
+    try {
+      if (await configFile.exists()) {
+        final decoded =
+            jsonDecode(
+          await configFile.readAsString(),
+        );
+
+        if (decoded is Map) {
+          config =
+              Map<String, dynamic>.from(
+            decoded,
+          );
+        }
+      }
+    } catch (_) {
+      /*
+       * O config não é obrigatório para
+       * criar o backup.
+       */
+    }
+
+    final galleryImages =
+        await _findGalleryImages(
+      directory,
+    );
+
+    final fallbackStudio =
+        p.basename(
+      directory.parent.path,
+    );
+
+    return TelegramStorageCatalogInfo(
+      name:
+          _readString(
+                config['name'],
+              ) ??
+              fallbackName,
+      studio:
+          _readString(
+                config['studio'],
+              ) ??
+              _readString(
+                config['manufacturer'],
+              ) ??
+              fallbackStudio,
+      category:
+          _readString(
+        config['category'],
+      ),
+      type:
+          _readString(
+        config['type'],
+      ),
+      scale:
+          _readString(
+        config['scale'],
+      ),
+      height:
+          _readString(
+        config['height'],
+      ),
+      description:
+          _readString(
+        config['description'],
+      ),
+      tags:
+          _readTags(
+        config['tags'],
+      ),
+      galleryImagePaths:
+          galleryImages,
+    );
+  }
+
+  String? _readString(
+    dynamic value,
+  ) {
+    if (value == null) {
+      return null;
+    }
+
+    final text =
+        value
+            .toString()
+            .trim();
+
+    return text.isEmpty
+        ? null
+        : text;
+  }
+
+  List<String> _readTags(
+    dynamic value,
+  ) {
+    if (value is! List) {
+      return <String>[];
+    }
+
+    return value
+        .map(
+          (
+            item,
+          ) =>
+              item
+                  .toString()
+                  .trim(),
+        )
+        .where(
+          (
+            item,
+          ) =>
+              item.isNotEmpty,
+        )
+        .toList();
+  }
+
+  // ============================================================
+  // GALLERY
+  // ============================================================
+
+  Future<List<String>>
+      _findGalleryImages(
+    Directory directory,
+  ) async {
+    final files =
+        <File>[];
+
+    await for (final entity
+        in directory.list(
+      recursive:
+          true,
+      followLinks:
+          false,
+    )) {
+      if (entity is! File) {
+        continue;
+      }
+
+      final extension =
+          p.extension(
+        entity.path,
+      ).toLowerCase();
+
+      /*
+       * Para o primeiro formato da galeria
+       * usamos somente formatos tratados
+       * normalmente pelo Telegram como foto.
+       *
+       * WebP/GIF continuam dentro do ZIP.
+       */
+      if (extension != '.jpg' &&
+          extension != '.jpeg' &&
+          extension != '.png') {
+        continue;
+      }
+
+      files.add(
+        entity,
+      );
+    }
+
+    files.sort(
+      (
+        a,
+        b,
+      ) {
+        final priorityA =
+            _galleryPriority(
+          directory,
+          a,
+        );
+
+        final priorityB =
+            _galleryPriority(
+          directory,
+          b,
+        );
+
+        final priorityCompare =
+            priorityA.compareTo(
+          priorityB,
+        );
+
+        if (priorityCompare != 0) {
+          return priorityCompare;
+        }
+
+        return a.path
+            .toLowerCase()
+            .compareTo(
+              b.path.toLowerCase(),
+            );
+      },
+    );
+
+    return files
+        .take(
+          maxGalleryImages,
+        )
+        .map(
+          (
+            file,
+          ) =>
+              file.path,
+        )
+        .toList();
+  }
+
+  int _galleryPriority(
+    Directory root,
+    File file,
+  ) {
+    final relative =
+        p.relative(
+      file.path,
+      from:
+          root.path,
+    );
+
+    final name =
+        p.basenameWithoutExtension(
+      file.path,
+    ).toLowerCase();
+
+    int namePriority =
+        50;
+
+    if (name.contains(
+      'cover',
+    )) {
+      namePriority =
+          0;
+    } else if (name.contains(
+      'main',
+    )) {
+      namePriority =
+          1;
+    } else if (name.contains(
+      'preview',
+    )) {
+      namePriority =
+          2;
+    } else if (name.contains(
+      'render',
+    )) {
+      namePriority =
+          3;
+    }
+
+    final depth =
+        max(
+      0,
+      p.split(
+            relative,
+          ).length -
+          1,
+    );
+
+    return (
+          namePriority *
+              100
+        ) +
+        depth;
+  }
+
+  // ============================================================
   // MANIFEST
   // ============================================================
 
@@ -433,8 +701,6 @@ class TelegramStoragePackager {
     TelegramStoragePackage package, {
     int? channelId,
     String? channelTitle,
-    Map<int, int?> messageIds =
-        const <int, int?>{},
   }) async {
     final file =
         File(
@@ -463,8 +729,6 @@ class TelegramStoragePackager {
               channelId,
           channelTitle:
               channelTitle,
-          messageIds:
-              messageIds,
         ),
       ),
       flush:
@@ -618,7 +882,7 @@ class TelegramStoragePackager {
   }
 
   // ============================================================
-  // SPLIT ARCHIVE
+  // SPLIT
   // ============================================================
 
   Future<List<File>> _splitArchive({
@@ -766,15 +1030,6 @@ class TelegramStoragePackager {
   Future<String> _calculateSha256(
     File file,
   ) async {
-    /*
-     * Evitamos adicionar uma dependência só
-     * para hashing neste momento.
-     *
-     * certutil faz parte do Windows e processa
-     * o arquivo externamente, portanto não
-     * bloqueamos o isolate da interface com
-     * hashing de arquivos de vários gigabytes.
-     */
     final result =
         await Process.run(
       'certutil',
@@ -857,12 +1112,7 @@ class TelegramStoragePackager {
       try {
         size +=
             await entity.length();
-      } catch (_) {
-        /*
-         * Um arquivo inacessível será
-         * percebido também pelo 7-Zip.
-         */
-      }
+      } catch (_) {}
     }
 
     return size;
@@ -1001,20 +1251,19 @@ class TelegramStoragePackager {
       );
 
       if (result.exitCode == 0) {
-        final output =
+        final paths =
             result.stdout
                 .toString()
-                .trim();
-
-        final paths =
-            output
+                .trim()
                 .split(
                   RegExp(
                     r'[\r\n]+',
                   ),
                 )
                 .where(
-                  (value) =>
+                  (
+                    value,
+                  ) =>
                       value
                           .trim()
                           .isNotEmpty,
@@ -1036,12 +1285,9 @@ class TelegramStoragePackager {
   // ============================================================
 
   String _createPackageId() {
-    final now =
-        DateTime.now()
-            .toUtc();
-
     final timestamp =
-        now
+        DateTime.now()
+            .toUtc()
             .millisecondsSinceEpoch
             .toRadixString(
               16,
@@ -1076,11 +1322,9 @@ class TelegramStoragePackager {
             )
             .trim();
 
-    if (sanitized.isEmpty) {
-      return 'fabularium_model';
-    }
-
-    return sanitized;
+    return sanitized.isEmpty
+        ? 'fabularium_model'
+        : sanitized;
   }
 
   void _report(
@@ -1090,10 +1334,12 @@ class TelegramStoragePackager {
     String stage,
   ) {
     callback?.call(
-      progress.clamp(
-        0.0,
-        1.0,
-      ),
+      progress
+          .clamp(
+            0.0,
+            1.0,
+          )
+          .toDouble(),
       stage,
     );
   }
