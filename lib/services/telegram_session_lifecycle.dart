@@ -225,3 +225,12 @@ class TelegramSessionResetException
   String toString() =>
       'Telegram session ended.';
 }
+
+class TelegramSessionInvalidException implements Exception {
+  final String message;
+
+  const TelegramSessionInvalidException(this.message);
+
+  @override
+  String toString() => message;
+}

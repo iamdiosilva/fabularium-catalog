@@ -4,957 +4,143 @@ import '../models/telegram_storage_channel.dart';
 import '../models/telegram_storage_workspace.dart';
 import '../services/telegram_storage_workspace_service.dart';
 
-enum _TelegramStorageChannelRole {
-  catalog,
-  files,
-}
+enum _ChannelRole { catalog, files }
 
-class TelegramStorageSettingsPage
-    extends StatefulWidget {
-  const TelegramStorageSettingsPage({
-    super.key,
-  });
-
+class TelegramStorageSettingsPage extends StatefulWidget {
+  const TelegramStorageSettingsPage({super.key});
   @override
-  State<TelegramStorageSettingsPage>
-      createState() =>
-          _TelegramStorageSettingsPageState();
+  State<TelegramStorageSettingsPage> createState() => _TelegramStorageSettingsPageState();
 }
 
-class _TelegramStorageSettingsPageState
-    extends State<TelegramStorageSettingsPage> {
-  final TelegramStorageWorkspaceService
-      _workspaceService =
-      TelegramStorageWorkspaceService.instance;
-
-  TelegramStorageWorkspace _workspace =
-      const TelegramStorageWorkspace.empty();
-
-  bool _isLoading =
-      true;
-
-  bool _isCreatingChannel =
-      false;
-
-  bool _isLoadingChannels =
-      false;
-
+class _TelegramStorageSettingsPageState extends State<TelegramStorageSettingsPage> {
+  final TelegramStorageWorkspaceService _service = TelegramStorageWorkspaceService.instance;
+  TelegramStorageWorkspace _workspace = const TelegramStorageWorkspace.empty();
+  bool _loading = true;
+  bool _busy = false;
   String? _error;
-
   String? _status;
 
-  bool get _isBusy =>
-      _isCreatingChannel ||
-      _isLoadingChannels;
-
-  int get _configuredChannelCount =>
-      (_workspace.hasCatalogChannel
-              ? 1
-              : 0) +
-          (_workspace.hasFilesChannel
-              ? 1
-              : 0);
-
   @override
-  void initState() {
-    super.initState();
+  void initState() { super.initState(); _load(); }
 
-    _loadStorage();
-  }
-
-  Future<void> _loadStorage() async {
+  Future<void> _load() async {
     try {
-      final workspace =
-          await _workspaceService.load();
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _workspace =
-            workspace;
-        _isLoading =
-            false;
-      });
+      final workspace = await _service.load();
+      if (!mounted) return;
+      setState(() { _workspace = workspace; _loading = false; _error = null; });
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isLoading =
-            false;
-        _error =
-            e.toString();
-      });
+      if (!mounted) return;
+      setState(() { _loading = false; _error = e.toString(); });
     }
   }
 
-  String _channelRoleTitle(
-    _TelegramStorageChannelRole role,
-  ) {
-    return role ==
-            _TelegramStorageChannelRole.catalog
-        ? 'Catalog Channel'
-        : 'Files Channel';
-  }
-
-  String _channelRoleDescription(
-    _TelegramStorageChannelRole role,
-  ) {
-    return role ==
-            _TelegramStorageChannelRole.catalog
-        ? 'Stores galleries, preview images and model metadata.'
-        : 'Stores ZIP files, split parts and package manifests.';
-  }
-
-  TelegramStorageChannel?
-      _channelForRole(
-    _TelegramStorageChannelRole role,
-  ) {
-    return role ==
-            _TelegramStorageChannelRole.catalog
-        ? _workspace.catalogChannel
-        : _workspace.filesChannel;
-  }
-
-  TelegramStorageChannel?
-      _otherChannelForRole(
-    _TelegramStorageChannelRole role,
-  ) {
-    return role ==
-            _TelegramStorageChannelRole.catalog
-        ? _workspace.filesChannel
-        : _workspace.catalogChannel;
-  }
-
-  Future<void> _createWorkspaceChannel(
-    _TelegramStorageChannelRole role,
-  ) async {
-    if (_isBusy) {
-      return;
-    }
-
-    final roleTitle =
-        _channelRoleTitle(
-      role,
-    );
-
-    setState(() {
-      _isCreatingChannel =
-          true;
-      _error =
-          null;
-      _status =
-          'Creating $roleTitle...';
-    });
-
+  Future<void> _create(_ChannelRole role) async {
+    setState(() { _busy = true; _error = null; _status = 'Creating channel...'; });
     try {
-      final workspace =
-          role ==
-                  _TelegramStorageChannelRole.catalog
-              ? await _workspaceService
-                  .createCatalogChannel()
-              : await _workspaceService
-                  .createFilesChannel();
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _workspace =
-            workspace;
-        _isCreatingChannel =
-            false;
-        _error =
-            null;
-        _status =
-            '$roleTitle created and configured successfully.';
-      });
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isCreatingChannel =
-            false;
-        _status =
-            null;
-        _error =
-            e.toString();
-      });
-    }
+      final workspace = role == _ChannelRole.catalog
+          ? await _service.createCatalogChannel()
+          : await _service.createFilesChannel();
+      if (!mounted) return;
+      setState(() { _workspace = workspace; _status = 'Channel configured.'; });
+    } catch (e) { if (mounted) setState(() => _error = e.toString()); }
+    finally { if (mounted) setState(() => _busy = false); }
   }
 
-  Future<void> _selectExistingChannel(
-    _TelegramStorageChannelRole role,
-  ) async {
-    if (_isBusy) {
-      return;
-    }
-
-    final roleTitle =
-        _channelRoleTitle(
-      role,
-    );
-
-    final otherChannel =
-        _otherChannelForRole(
-      role,
-    );
-
-    setState(() {
-      _isLoadingChannels =
-          true;
-      _error =
-          null;
-      _status =
-          'Loading private Telegram channels...';
-    });
-
+  Future<void> _select(_ChannelRole role) async {
+    setState(() { _busy = true; _error = null; _status = 'Loading private channels...'; });
     try {
-      final channels =
-          await _workspaceService
-              .listAvailableChannels();
-
-      if (!mounted) {
-        return;
-      }
-
-      final selectableChannels =
-          channels
-              .where(
-                (
-                  channel,
-                ) =>
-                    channel.id !=
-                    otherChannel?.id,
-              )
-              .toList();
-
-      setState(() {
-        _isLoadingChannels =
-            false;
-        _status =
-            null;
-      });
-
-      if (selectableChannels
-          .isEmpty) {
-        setState(() {
-          _error =
-              otherChannel ==
-                      null
-                  ? 'No writable private Telegram channels were found.'
-                  : 'No other writable private Telegram channel is available. '
-                      'Catalog Channel and Files Channel must be different.';
-        });
-
-        return;
-      }
-
-      final selected =
-          await showDialog<
-              TelegramStorageChannel>(
-        context:
-            context,
-        builder:
-            (
-          context,
-        ) {
-          return AlertDialog(
-            title:
-                Text(
-              'Select $roleTitle',
-            ),
-            content:
-                SizedBox(
-              width:
-                  560,
-              height:
-                  420,
-              child:
-                  Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _channelRoleDescription(
-                      role,
+      final channels = await _service.listAvailableChannels();
+      if (!mounted) return;
+      final otherId = role == _ChannelRole.catalog ? _workspace.filesChannel?.id : _workspace.catalogChannel?.id;
+      final selectable = channels.where((c) => c.id != otherId).toList();
+      final selected = await showDialog<TelegramStorageChannel>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(role == _ChannelRole.catalog ? 'Select Catalog Channel' : 'Select Files Channel'),
+          content: SizedBox(
+            width: 520,
+            height: 420,
+            child: selectable.isEmpty
+                ? const Center(child: Text('No compatible private channels found.'))
+                : ListView.builder(
+                    itemCount: selectable.length,
+                    itemBuilder: (_, i) => ListTile(
+                      leading: const Icon(Icons.campaign_outlined),
+                      title: Text(selectable[i].title),
+                      subtitle: Text('ID ${selectable[i].id}'),
+                      onTap: () => Navigator.of(context).pop(selectable[i]),
                     ),
                   ),
-                  const SizedBox(
-                    height:
-                        16,
-                  ),
-                  Expanded(
-                    child:
-                        ListView.separated(
-                      itemCount:
-                          selectableChannels.length,
-                      separatorBuilder:
-                          (
-                        context,
-                        index,
-                      ) =>
-                              const Divider(
-                        height:
-                            1,
-                      ),
-                      itemBuilder:
-                          (
-                        context,
-                        index,
-                      ) {
-                        final channel =
-                            selectableChannels[
-                                index];
-
-                        return ListTile(
-                          leading:
-                              const CircleAvatar(
-                            child:
-                                Icon(
-                              Icons.lock_outline,
-                            ),
-                          ),
-                          title:
-                              Text(
-                            channel.title,
-                          ),
-                          subtitle:
-                              Text(
-                            'Private channel • ID ${channel.id}',
-                          ),
-                          trailing:
-                              const Icon(
-                            Icons.chevron_right,
-                          ),
-                          onTap:
-                              () {
-                            Navigator.of(
-                              context,
-                            ).pop(
-                              channel,
-                            );
-                          },
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed:
-                    () {
-                  Navigator.of(
-                    context,
-                  ).pop();
-                },
-                child:
-                    const Text(
-                  'Cancel',
-                ),
-              ),
-            ],
-          );
-        },
+          ),
+          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel'))],
+        ),
       );
-
-      if (selected ==
-              null ||
-          !mounted) {
-        return;
+      if (selected != null) {
+        final workspace = role == _ChannelRole.catalog
+            ? await _service.selectCatalogChannel(selected)
+            : await _service.selectFilesChannel(selected);
+        if (mounted) setState(() { _workspace = workspace; _status = 'Channel configured.'; });
       }
-
-      final workspace =
-          role ==
-                  _TelegramStorageChannelRole.catalog
-              ? await _workspaceService
-                  .selectCatalogChannel(
-                  selected,
-                )
-              : await _workspaceService
-                  .selectFilesChannel(
-                  selected,
-                );
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _workspace =
-            workspace;
-        _error =
-            null;
-        _status =
-            'Using "${selected.title}" as $roleTitle.';
-      });
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _isLoadingChannels =
-            false;
-        _status =
-            null;
-        _error =
-            e.toString();
-      });
-    }
+    } catch (e) { if (mounted) setState(() => _error = e.toString()); }
+    finally { if (mounted) setState(() => _busy = false); }
   }
 
-  Future<void> _forgetWorkspaceChannel(
-    _TelegramStorageChannelRole role,
-  ) async {
-    if (_isBusy) {
-      return;
-    }
-
-    final channel =
-        _channelForRole(
-      role,
-    );
-
-    if (channel ==
-        null) {
-      return;
-    }
-
-    final roleTitle =
-        _channelRoleTitle(
-      role,
-    );
-
-    final confirmed =
-        await showDialog<
-            bool>(
-      context:
-          context,
-      builder:
-          (
-        context,
-      ) {
-        return AlertDialog(
-          title:
-              Text(
-            'Forget $roleTitle?',
-          ),
-          content:
-              Text(
-            'This removes only the local $roleTitle configuration. '
-            'Nothing will be deleted from Telegram.',
-          ),
-          actions: [
-            TextButton(
-              onPressed:
-                  () {
-                Navigator.of(
-                  context,
-                ).pop(
-                  false,
-                );
-              },
-              child:
-                  const Text(
-                'Cancel',
-              ),
-            ),
-            FilledButton(
-              onPressed:
-                  () {
-                Navigator.of(
-                  context,
-                ).pop(
-                  true,
-                );
-              },
-              child:
-                  const Text(
-                'Forget',
-              ),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed !=
-            true ||
-        !mounted) {
-      return;
-    }
-
+  Future<void> _clear(_ChannelRole role) async {
+    setState(() => _busy = true);
     try {
-      final workspace =
-          role ==
-                  _TelegramStorageChannelRole.catalog
-              ? await _workspaceService
-                  .clearCatalogChannel()
-              : await _workspaceService
-                  .clearFilesChannel();
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _workspace =
-            workspace;
-        _error =
-            null;
-        _status =
-            '$roleTitle configuration removed.';
-      });
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _error =
-            e.toString();
-      });
-    }
+      final workspace = role == _ChannelRole.catalog
+          ? await _service.clearCatalogChannel()
+          : await _service.clearFilesChannel();
+      if (mounted) setState(() => _workspace = workspace);
+    } catch (e) { if (mounted) setState(() => _error = e.toString()); }
+    finally { if (mounted) setState(() => _busy = false); }
   }
 
   @override
-  Widget build(
-    BuildContext context,
-  ) {
+  Widget build(BuildContext context) {
     return Scaffold(
-      appBar:
-          AppBar(
-        title:
-            const Text(
-          'Storage Settings',
-        ),
-        actions: [
-          IconButton(
-            tooltip:
-                'Refresh',
-            onPressed:
-                _isBusy
-                    ? null
-                    : _loadStorage,
-            icon:
-                const Icon(
-              Icons.refresh,
-            ),
-          ),
-        ],
-      ),
-      body:
-          _buildBody(),
-    );
-  }
-
-  Widget _buildBody() {
-    if (_isLoading) {
-      return const Center(
-        child:
-            CircularProgressIndicator(),
-      );
-    }
-
-    return ListView(
-      padding:
-          const EdgeInsets.all(
-        24,
-      ),
-      children: [
-        Text(
-          'Storage Workspace',
-          style:
-              Theme.of(context)
-                  .textTheme
-                  .headlineSmall
-                  ?.copyWith(
-                    fontWeight:
-                        FontWeight.bold,
-                  ),
-        ),
-        const SizedBox(
-          height:
-              8,
-        ),
-        const Text(
-          'Catalog and file storage use different private Telegram channels.',
-        ),
-        const SizedBox(
-          height:
-              24,
-        ),
-        _buildWorkspaceCard(),
-        if (_status !=
-            null) ...[
-          const SizedBox(
-            height:
-                20,
-          ),
-          _buildStatusCard(),
-        ],
-        if (_error !=
-            null) ...[
-          const SizedBox(
-            height:
-                20,
-          ),
-          _buildErrorCard(),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildWorkspaceCard() {
-    return Card(
-      child:
-          Padding(
-        padding:
-            const EdgeInsets.all(
-          20,
-        ),
-        child:
-            Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            Row(
+      appBar: AppBar(title: const Text('Telegram Storage Settings')),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(24),
               children: [
-                const Icon(
-                  Icons.account_tree_outlined,
-                  size:
-                      30,
-                ),
-                const SizedBox(
-                  width:
-                      12,
-                ),
-                Expanded(
-                  child:
-                      Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Telegram Storage V3',
-                        style:
-                            TextStyle(
-                          fontSize:
-                              18,
-                          fontWeight:
-                              FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(
-                        height:
-                            4,
-                      ),
-                      Text(
-                        _workspace.isFullyConfigured
-                            ? 'Catalog and Files channels are configured.'
-                            : 'Configure the channels independently.',
-                      ),
-                    ],
-                  ),
-                ),
-                Chip(
-                  label:
-                      Text(
-                    _workspace.isFullyConfigured
-                        ? 'Ready'
-                        : '$_configuredChannelCount / 2',
-                  ),
-                ),
+                Text('Storage V3 Workspace', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                const Text('Catalog stores galleries and metadata. Files stores ZIP parts and manifests. The channels must be different.'),
+                const SizedBox(height: 20),
+                _channelCard(_ChannelRole.catalog, _workspace.catalogChannel),
+                const SizedBox(height: 16),
+                _channelCard(_ChannelRole.files, _workspace.filesChannel),
+                if (_status != null) ...[const SizedBox(height: 16), Text(_status!)],
+                if (_error != null) ...[const SizedBox(height: 12), Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error))],
               ],
             ),
-            const SizedBox(
-              height:
-                  20,
-            ),
-            _buildChannelSection(
-              role:
-                  _TelegramStorageChannelRole.catalog,
-              icon:
-                  Icons.photo_library_outlined,
-            ),
-            const Divider(
-              height:
-                  36,
-            ),
-            _buildChannelSection(
-              role:
-                  _TelegramStorageChannelRole.files,
-              icon:
-                  Icons.inventory_2_outlined,
-            ),
-            const SizedBox(
-              height:
-                  16,
-            ),
-            Text(
-              'The legacy single storage channel is migrated to '
-              'Files Channel automatically.',
-              style:
-                  Theme.of(context)
-                      .textTheme
-                      .bodySmall,
-            ),
-          ],
-        ),
-      ),
     );
   }
 
-  Widget _buildChannelSection({
-    required _TelegramStorageChannelRole role,
-    required IconData icon,
-  }) {
-    final channel =
-        _channelForRole(
-      role,
-    );
-
-    final title =
-        _channelRoleTitle(
-      role,
-    );
-
-    return Column(
-      crossAxisAlignment:
-          CrossAxisAlignment.start,
-      children: [
-        Row(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            Icon(
-              icon,
-              size:
-                  28,
-            ),
-            const SizedBox(
-              width:
-                  12,
-            ),
-            Expanded(
-              child:
-                  Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title.toUpperCase(),
-                    style:
-                        const TextStyle(
-                      fontSize:
-                          15,
-                      fontWeight:
-                          FontWeight.bold,
-                      letterSpacing:
-                          0.6,
-                    ),
-                  ),
-                  const SizedBox(
-                    height:
-                        4,
-                  ),
-                  Text(
-                    _channelRoleDescription(
-                      role,
-                    ),
-                  ),
-                  if (channel !=
-                      null) ...[
-                    const SizedBox(
-                      height:
-                          10,
-                    ),
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.cloud_done_outlined,
-                          size:
-                              18,
-                        ),
-                        const SizedBox(
-                          width:
-                              8,
-                        ),
-                        Expanded(
-                          child:
-                              Text(
-                            '${channel.title} • ID ${channel.id}',
-                            maxLines:
-                                1,
-                            overflow:
-                                TextOverflow.ellipsis,
-                            style:
-                                const TextStyle(
-                              fontWeight:
-                                  FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(
-                          width:
-                              8,
-                        ),
-                        const Chip(
-                          label:
-                              Text(
-                            'Configured',
-                          ),
-                          visualDensity:
-                              VisualDensity.compact,
-                        ),
-                      ],
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(
-          height:
-              14,
-        ),
-        Wrap(
-          spacing:
-              12,
-          runSpacing:
-              12,
-          children: [
-            OutlinedButton.icon(
-              onPressed:
-                  _isBusy
-                      ? null
-                      : () =>
-                          _selectExistingChannel(
-                            role,
-                          ),
-              icon:
-                  const Icon(
-                Icons.cloud_queue,
-              ),
-              label:
-                  const Text(
-                'Select Existing',
-              ),
-            ),
-            FilledButton.icon(
-              onPressed:
-                  _isBusy
-                      ? null
-                      : () =>
-                          _createWorkspaceChannel(
-                            role,
-                          ),
-              icon:
-                  const Icon(
-                Icons.add,
-              ),
-              label:
-                  const Text(
-                'Create',
-              ),
-            ),
-            if (channel !=
-                null)
-              TextButton.icon(
-                onPressed:
-                    _isBusy
-                        ? null
-                        : () =>
-                            _forgetWorkspaceChannel(
-                              role,
-                            ),
-                icon:
-                    const Icon(
-                  Icons.link_off,
-                ),
-                label:
-                    const Text(
-                  'Forget',
-                ),
-              ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStatusCard() {
+  Widget _channelCard(_ChannelRole role, TelegramStorageChannel? channel) {
+    final isCatalog = role == _ChannelRole.catalog;
     return Card(
-      child:
-          Padding(
-        padding:
-            const EdgeInsets.all(
-          16,
-        ),
-        child:
-            Row(
-          children: [
-            const Icon(
-              Icons.info_outline,
-            ),
-            const SizedBox(
-              width:
-                  12,
-            ),
-            Expanded(
-              child:
-                  Text(
-                _status!,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildErrorCard() {
-    return Card(
-      child:
-          Padding(
-        padding:
-            const EdgeInsets.all(
-          16,
-        ),
-        child:
-            Row(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            Icon(
-              Icons.error_outline,
-              color:
-                  Theme.of(context)
-                      .colorScheme
-                      .error,
-            ),
-            const SizedBox(
-              width:
-                  12,
-            ),
-            Expanded(
-              child:
-                  Text(
-                _error!,
-              ),
-            ),
-          ],
-        ),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(isCatalog ? Icons.photo_library_outlined : Icons.archive_outlined),
+            const SizedBox(width: 10),
+            Expanded(child: Text(isCatalog ? 'Catalog Channel' : 'Files Channel', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17))),
+            Chip(label: Text(channel == null ? 'Not configured' : 'Configured')),
+          ]),
+          const SizedBox(height: 8),
+          Text(channel?.title ?? (isCatalog ? 'Stores gallery images and model metadata.' : 'Stores package parts and final manifests.')),
+          if (channel != null) ...[const SizedBox(height: 6), SelectableText('ID: ${channel.id}')],
+          const SizedBox(height: 14),
+          Wrap(spacing: 10, runSpacing: 10, children: [
+            FilledButton.tonalIcon(onPressed: _busy ? null : () => _select(role), icon: const Icon(Icons.list), label: const Text('Select Existing')),
+            OutlinedButton.icon(onPressed: _busy ? null : () => _create(role), icon: const Icon(Icons.add), label: const Text('Create')),
+            if (channel != null) TextButton.icon(onPressed: _busy ? null : () => _clear(role), icon: const Icon(Icons.link_off), label: const Text('Forget')),
+          ]),
+        ]),
       ),
     );
   }

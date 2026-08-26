@@ -1,511 +1,108 @@
 import 'package:flutter/material.dart';
+import 'package:t/t.dart' as t;
 
 import '../models/telegram_group.dart';
-import '../services/telegram_browse_worker.dart';
+import '../services/telegram_client.dart';
 import 'telegram_messages_page.dart';
-import 'telegram_storage_page.dart';
 
-class TelegramGroupsPage
-    extends StatefulWidget {
-  const TelegramGroupsPage({
-    super.key,
-  });
+class TelegramGroupPages extends StatefulWidget {
+  const TelegramGroupPages({super.key});
 
   @override
-  State<TelegramGroupsPage>
-      createState() =>
-          _TelegramGroupsPageState();
+  State<TelegramGroupPages> createState() => _TelegramGroupPagesState();
 }
 
-class _TelegramGroupsPageState
-    extends State<TelegramGroupsPage> {
-  final TelegramBrowseWorker _browseWorker =
-      TelegramBrowseWorker.instance;
-
-  bool _isLoading =
-      true;
-
-  bool _isRefreshing =
-      false;
-
+class _TelegramGroupPagesState extends State<TelegramGroupPages> {
+  List<TelegramGroup> _groups = const [];
+  bool _loading = true;
   String? _error;
-
-  List<TelegramGroup> _groups =
-      [];
-
-  String _searchQuery =
-      '';
-
-  final TextEditingController
-      _searchController =
-      TextEditingController();
 
   @override
   void initState() {
     super.initState();
-
-    _searchController.addListener(
-      _onSearchChanged,
-    );
-
-    _loadGroups();
+    _load();
   }
 
-  @override
-  void dispose() {
-    _searchController.removeListener(
-      _onSearchChanged,
-    );
-
-    _searchController.dispose();
-
-    super.dispose();
-  }
-
-  void _onSearchChanged() {
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _searchQuery =
-          _searchController.text
-              .trim()
-              .toLowerCase();
-    });
-  }
-
-  Future<void> _loadGroups({
-    bool forceRefresh = false,
-  }) async {
-    if (_isRefreshing) {
-      return;
-    }
-
-    if (forceRefresh) {
-      setState(() {
-        _isRefreshing =
-            true;
-
-        _error =
-            null;
-      });
-    } else {
-      setState(() {
-        _isLoading =
-            true;
-
-        _error =
-            null;
-      });
-    }
-
+  Future<void> _load() async {
+    setState(() { _loading = true; _error = null; });
     try {
-      final groups =
-          await _browseWorker
-              .getGroups(
-        forceRefresh:
-            forceRefresh,
+      final telegram = TelegramClient.instance;
+      final client = await telegram.connect();
+      final response = await client.messages.getDialogs(
+        excludePinned: false,
+        offsetDate: DateTime.fromMillisecondsSinceEpoch(0),
+        offsetId: 0,
+        offsetPeer: const t.InputPeerEmpty(),
+        limit: 100,
+        hash: 0,
       );
-
-      if (!mounted) {
-        return;
+      if (response.error != null) throw Exception(response.error!.errorMessage);
+      final result = response.result;
+      final items = <TelegramGroup>[];
+      if (result != null) {
+        List<dynamic> chats = const [];
+        try { chats = List<dynamic>.from((result as dynamic).chats as List); } catch (_) {}
+        for (final chat in chats) {
+          if (chat is t.Channel) {
+            final hash = chat.accessHash;
+            if (hash == null) continue;
+            items.add(TelegramGroup(
+              id: chat.id,
+              title: chat.title,
+              accessHash: hash,
+              isChannel: true,
+            ));
+          } else if (chat is t.Chat) {
+            items.add(TelegramGroup(
+              id: chat.id,
+              title: chat.title,
+              accessHash: null,
+              isChannel: false,
+            ));
+          }
+        }
       }
-
-      setState(() {
-        _groups =
-            groups;
-
-        _isLoading =
-            false;
-
-        _isRefreshing =
-            false;
-
-        _error =
-            null;
-      });
+      items.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+      await telegram.disconnect();
+      if (!mounted) return;
+      setState(() { _groups = items; _loading = false; });
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _error =
-            e.toString();
-
-        _isLoading =
-            false;
-
-        _isRefreshing =
-            false;
-      });
+      try { await TelegramClient.instance.disconnect(); } catch (_) {}
+      if (!mounted) return;
+      setState(() { _loading = false; _error = e.toString(); });
     }
-  }
-
-  List<TelegramGroup>
-      get _filteredGroups {
-    if (_searchQuery.isEmpty) {
-      return _groups;
-    }
-
-    return _groups
-        .where(
-          (
-            group,
-          ) =>
-              group.title
-                  .toLowerCase()
-                  .contains(
-                    _searchQuery,
-                  ),
-        )
-        .toList();
-  }
-
-  Future<void> _openGroup(
-    TelegramGroup group,
-  ) async {
-    await Navigator.of(context)
-        .push(
-      MaterialPageRoute(
-        builder:
-            (_) =>
-                TelegramMessagesPage(
-          group:
-              group,
-        ),
-      ),
-    );
-  }
-
-  Future<void> _openStorage() async {
-    await Navigator.of(context)
-        .push(
-      MaterialPageRoute(
-        builder:
-            (_) =>
-                const TelegramStoragePage(),
-      ),
-    );
-  }
-
-  Future<void> _refresh() async {
-    await _loadGroups(
-      forceRefresh:
-          true,
-    );
   }
 
   @override
-  Widget build(
-    BuildContext context,
-  ) {
+  Widget build(BuildContext context) {
     return Scaffold(
-      appBar:
-          AppBar(
-        title:
-            const Text(
-          'Telegram Groups',
-        ),
-        actions: [
-          IconButton(
-            tooltip:
-                'Telegram Storage',
-            onPressed:
-                _openStorage,
-            icon:
-                const Icon(
-              Icons.cloud_outlined,
-            ),
-          ),
-
-          if (_isRefreshing)
-            const Padding(
-              padding:
-                  EdgeInsets.symmetric(
-                horizontal:
-                    18,
-              ),
-              child:
-                  Center(
-                child:
-                    SizedBox(
-                  width:
-                      18,
-                  height:
-                      18,
-                  child:
-                      CircularProgressIndicator(
-                    strokeWidth:
-                        2,
-                  ),
-                ),
-              ),
-            )
-          else
-            IconButton(
-              tooltip:
-                  'Refresh',
-              onPressed:
-                  _isLoading
-                      ? null
-                      : _refresh,
-              icon:
-                  const Icon(
-                Icons.refresh,
-              ),
-            ),
-        ],
+      appBar: AppBar(
+        title: const Text('Telegram Groups'),
+        actions: [IconButton(onPressed: _loading ? null : _load, icon: const Icon(Icons.refresh))],
       ),
-      body:
-          _buildBody(),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null
+              ? Center(child: Text(_error!))
+              : ListView.separated(
+                  itemCount: _groups.length,
+                  separatorBuilder: (context, index) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final group = _groups[index];
+                    return ListTile(
+                      leading: Icon(group.isChannel ? Icons.campaign_outlined : Icons.groups_outlined),
+                      title: Text(group.title),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => TelegramMessagesPage(group: group)),
+                      ),
+                    );
+                  },
+                ),
     );
   }
+}
 
-  Widget _buildBody() {
-    if (_isLoading &&
-        _groups.isEmpty) {
-      return const Center(
-        child:
-            Column(
-          mainAxisSize:
-              MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(
-              height:
-                  16,
-            ),
-            Text(
-              'Loading Telegram groups...',
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (_error != null &&
-        _groups.isEmpty) {
-      return Center(
-        child:
-            Padding(
-          padding:
-              const EdgeInsets.all(
-            24,
-          ),
-          child:
-              Column(
-            mainAxisSize:
-                MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.error_outline,
-                size:
-                    64,
-              ),
-              const SizedBox(
-                height:
-                    16,
-              ),
-              Text(
-                'Error loading Telegram groups',
-                style:
-                    Theme.of(context)
-                        .textTheme
-                        .titleLarge,
-              ),
-              const SizedBox(
-                height:
-                    12,
-              ),
-              Text(
-                _error!,
-                textAlign:
-                    TextAlign.center,
-              ),
-              const SizedBox(
-                height:
-                    20,
-              ),
-              FilledButton.icon(
-                onPressed:
-                    () {
-                  _loadGroups(
-                    forceRefresh:
-                        true,
-                  );
-                },
-                icon:
-                    const Icon(
-                  Icons.refresh,
-                ),
-                label:
-                    const Text(
-                  'Try Again',
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    final filteredGroups =
-        _filteredGroups;
-
-    return Column(
-      children: [
-        if (_isRefreshing)
-          const LinearProgressIndicator(
-            minHeight:
-                2,
-          ),
-
-        Padding(
-          padding:
-              const EdgeInsets.fromLTRB(
-            24,
-            20,
-            24,
-            12,
-          ),
-          child:
-              TextField(
-            controller:
-                _searchController,
-            decoration:
-                InputDecoration(
-              hintText:
-                  'Search groups...',
-              prefixIcon:
-                  const Icon(
-                Icons.search,
-              ),
-              suffixIcon:
-                  _searchQuery.isNotEmpty
-                      ? IconButton(
-                          tooltip:
-                              'Clear Search',
-                          onPressed:
-                              _searchController.clear,
-                          icon:
-                              const Icon(
-                            Icons.clear,
-                          ),
-                        )
-                      : null,
-              border:
-                  const OutlineInputBorder(),
-            ),
-          ),
-        ),
-
-        Padding(
-          padding:
-              const EdgeInsets.symmetric(
-            horizontal:
-                24,
-          ),
-          child:
-              Row(
-            children: [
-              Text(
-                '${filteredGroups.length} groups',
-                style:
-                    Theme.of(context)
-                        .textTheme
-                        .titleMedium,
-              ),
-              const Spacer(),
-              if (_isRefreshing)
-                Text(
-                  'Updating...',
-                  style:
-                      Theme.of(context)
-                          .textTheme
-                          .bodySmall,
-                ),
-            ],
-          ),
-        ),
-
-        const SizedBox(
-          height:
-              8,
-        ),
-
-        Expanded(
-          child:
-              filteredGroups.isEmpty
-                  ? const Center(
-                      child:
-                          Text(
-                        'No groups found.',
-                      ),
-                    )
-                  : ListView.separated(
-                      padding:
-                          const EdgeInsets.all(
-                        24,
-                      ),
-                      itemCount:
-                          filteredGroups.length,
-                      separatorBuilder:
-                          (
-                        context,
-                        index,
-                      ) =>
-                              const Divider(
-                        height:
-                            1,
-                      ),
-                      itemBuilder:
-                          (
-                        context,
-                        index,
-                      ) {
-                        final group =
-                            filteredGroups[
-                                index];
-
-                        return ListTile(
-                          leading:
-                              CircleAvatar(
-                            child:
-                                Icon(
-                              group.isChannel
-                                  ? Icons
-                                      .groups_2_outlined
-                                  : Icons
-                                      .group_outlined,
-                            ),
-                          ),
-                          title:
-                              Text(
-                            group.title,
-                          ),
-                          subtitle:
-                              Text(
-                            group.isChannel
-                                ? 'Supergroup'
-                                : 'Group',
-                          ),
-                          trailing:
-                              const Icon(
-                            Icons.chevron_right,
-                          ),
-                          onTap:
-                              () {
-                            _openGroup(
-                              group,
-                            );
-                          },
-                        );
-                      },
-                    ),
-        ),
-      ],
-    );
-  }
+// Compatibility alias used by older navigation code.
+class TelegramGroupsPage extends TelegramGroupPages {
+  const TelegramGroupsPage({super.key});
 }

@@ -1,8 +1,6 @@
 class TelegramStorageChannel {
   final int id;
-
   final int accessHash;
-
   final String title;
 
   const TelegramStorageChannel({
@@ -19,15 +17,11 @@ class TelegramStorageChannel {
     };
   }
 
-  factory TelegramStorageChannel.fromJson(
-    Map<String, dynamic> json,
-  ) {
+  factory TelegramStorageChannel.fromJson(Map<String, dynamic> json) {
     return TelegramStorageChannel(
       id: json['id'] as int,
-      accessHash:
-          json['accessHash'] as int,
-      title:
-          json['title'] as String,
+      accessHash: json['accessHash'] as int,
+      title: json['title'] as String,
     );
   }
 }

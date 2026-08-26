@@ -51,36 +51,16 @@ class DownloadTask {
   });
 
   double? get progress {
-    if (totalBytes <=
-        0) {
+    if (totalBytes <= 0) {
       return null;
     }
 
-    return (receivedBytes /
-            totalBytes)
-        .clamp(
-      0.0,
-      1.0,
-    );
+    return (receivedBytes / totalBytes).clamp(0.0, 1.0);
   }
 
-  bool get isQueued =>
-      status ==
-      DownloadTaskStatus.queued;
-
-  bool get isDownloading =>
-      status ==
-      DownloadTaskStatus.downloading;
-
-  bool get isCompleted =>
-      status ==
-      DownloadTaskStatus.completed;
-
-  bool get isFailed =>
-      status ==
-      DownloadTaskStatus.failed;
-
-  bool get isFinished =>
-      isCompleted ||
-      isFailed;
+  bool get isQueued => status == DownloadTaskStatus.queued;
+  bool get isDownloading => status == DownloadTaskStatus.downloading;
+  bool get isCompleted => status == DownloadTaskStatus.completed;
+  bool get isFailed => status == DownloadTaskStatus.failed;
+  bool get isFinished => isCompleted || isFailed;
 }

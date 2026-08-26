@@ -141,8 +141,6 @@ class TelegramStoragePackageRecoveryService {
                 catalog == null
                     ? null
                     : <String, dynamic>{
-                        'modelId':
-                            catalog.modelId,
                         'name':
                             catalog.name,
                         'studio':
@@ -299,11 +297,6 @@ class TelegramStoragePackageRecoveryService {
 
       catalog =
           TelegramStorageCatalogInfo(
-        modelId:
-            _optionalString(
-                  catalogData['modelId'],
-                ) ??
-                '',
         name:
             _requiredString(
           catalogData['name'],
@@ -426,38 +419,61 @@ class TelegramStoragePackageRecoveryService {
     required TelegramStoragePackage package,
     required TelegramStorageUploadJournal journal,
   }) async {
-    for (final part
-        in package.parts) {
-      final file =
-          File(
-        part.filePath,
-      );
+    final sortedParts =
+        List<TelegramStoragePackagePart>.from(package.parts)
+          ..sort((a, b) => a.index.compareTo(b.index));
 
-      if (!await file.exists()) {
-        throw TelegramStoragePackageRecoveryException(
-          'Missing local package part: ${part.fileName}',
-        );
+    const partsPerGroup = 10;
+
+    for (int offset = 0; offset < sortedParts.length; offset += partsPerGroup) {
+      final end =
+          (offset + partsPerGroup) > sortedParts.length
+              ? sortedParts.length
+              : offset + partsPerGroup;
+
+      final groupIndex = (offset ~/ partsPerGroup) + 1;
+      final groupParts = sortedParts.sublist(offset, end);
+      final journalGroup = journal.fileGroups[groupIndex];
+
+      final groupComplete =
+          journalGroup != null &&
+          journalGroup.messageIds.length == groupParts.length &&
+          journalGroup.messageIds.every((id) => id > 0) &&
+          groupParts.every(
+            (part) =>
+                (journalGroup.partMessageIds[part.index] ?? 0) > 0,
+          );
+
+      // A complete group already lives in Telegram. Its local ZIP/part files
+      // are no longer required for a resumed upload after an app restart.
+      if (groupComplete) {
+        continue;
       }
 
-      final size =
-          await file.length();
+      for (final part in groupParts) {
+        final file = File(part.filePath);
 
-      if (size != part.size) {
-        throw TelegramStoragePackageRecoveryException(
-          'Local package part size changed: ${part.fileName}',
-        );
+        if (!await file.exists()) {
+          throw TelegramStoragePackageRecoveryException(
+            'Missing local package part required for Resume: ${part.fileName}',
+          );
+        }
+
+        final size = await file.length();
+
+        if (size != part.size) {
+          throw TelegramStoragePackageRecoveryException(
+            'Local package part size changed: ${part.fileName}',
+          );
+        }
       }
     }
 
     if (!journal.hasGallery) {
-      for (final imagePath
-          in package.galleryImagePaths) {
-        if (!await File(
-          imagePath,
-        ).exists()) {
+      for (final imagePath in package.galleryImagePaths) {
+        if (!await File(imagePath).exists()) {
           throw TelegramStoragePackageRecoveryException(
-            'Gallery image is no longer available: '
-            '${p.basename(imagePath)}',
+            'Gallery image is no longer available: ${p.basename(imagePath)}',
           );
         }
       }

@@ -2,7 +2,6 @@ class TelegramGroup {
   final int id;
   final String title;
   final int? accessHash;
-
   final bool isChannel;
 
   const TelegramGroup({
