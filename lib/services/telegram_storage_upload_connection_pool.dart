@@ -37,7 +37,7 @@ class TelegramStorageUploadConnectionPool {
       _clients.length;
 
   Future<void> open({
-    int size = 4,
+    int size = 8,
   }) async {
     if (_isClosed) {
       throw const TelegramStorageUploadConnectionPoolException(
@@ -215,7 +215,7 @@ class TelegramStorageUploadConnectionPool {
         apiId:
             TelegramConfig.apiId,
         deviceModel:
-            'Fabularium Catalog Upload $slot',
+            'Fabularium Catalog Upload V3 $slot',
         systemVersion:
             'Windows',
         appVersion:

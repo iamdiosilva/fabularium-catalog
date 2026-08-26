@@ -493,14 +493,15 @@ Future<void>
         1;
 
     /*
-     * Arquivos grandes tentam usar quatro sessões
+     * Arquivos grandes tentam usar oito sessões
      * MTProto independentes.
      *
      * Se o pool não puder ser aberto, mantemos o
-     * comportamento V1: quatro requests concorrentes
-     * sobre a conexão principal. Assim performance V2
-     * nunca transforma um problema do pool em falha do
-     * package inteiro.
+     * fallback conservador já validado: quatro requests
+     * concorrentes sobre a conexão principal.
+     *
+     * Assim a Performance V3 nunca transforma um
+     * problema do pool em falha do package inteiro.
      */
     if (hasLargeFile) {
       uploadClients
@@ -515,7 +516,7 @@ Future<void>
       _sendProgress(
         eventPort,
         0,
-        'Opening 4 Telegram upload connections...',
+        'Opening 8 Telegram upload connections...',
       );
 
       uploadPool =
@@ -527,7 +528,7 @@ Future<void>
       try {
         await uploadPool.open(
           size:
-              4,
+              8,
         );
 
         uploadClients
@@ -555,7 +556,7 @@ Future<void>
         _sendProgress(
           eventPort,
           0,
-          'Parallel sockets unavailable. Using V1 upload mode.',
+          '8-socket pool unavailable. Using 4-request fallback.',
         );
       }
     }
@@ -977,14 +978,16 @@ Future<t.InputFileBase>
    *
    * With the V2 pool this normally means:
    *
-   *   4 sockets x 512 KB
+   *   8 sockets x 512 KB
    *
-   * instead of four invokes competing on the
-   * same tg.Client/socket.
+   * = about 4 MB of file data in flight.
+   *
+   * Each save-part RPC goes through its own
+   * tg.Client/socket whenever the pool is active.
    */
   final int maxConcurrentParts =
       min<int>(
-    4,
+    8,
     uploadClients.length,
   );
 
@@ -1501,21 +1504,47 @@ String? _formatTransferRate(
       uploadedBytes /
       seconds;
 
-  const mb =
+  final bitsPerSecond =
+      bytesPerSecond *
+      8;
+
+  const bytesPerMb =
       1024 *
       1024;
 
+  const bitsPerMbps =
+      1000 *
+      1000;
+
   if (bytesPerSecond >=
-      mb) {
-    return '${(bytesPerSecond / mb).toStringAsFixed(2)} MB/s';
+      bytesPerMb) {
+    final megabytesPerSecond =
+        bytesPerSecond /
+        bytesPerMb;
+
+    final megabitsPerSecond =
+        bitsPerSecond /
+        bitsPerMbps;
+
+    return '${megabytesPerSecond.toStringAsFixed(2)} MB/s'
+        ' • ${megabitsPerSecond.toStringAsFixed(1)} Mbps';
   }
 
-  const kb =
+  const bytesPerKb =
       1024;
 
   if (bytesPerSecond >=
-      kb) {
-    return '${(bytesPerSecond / kb).toStringAsFixed(0)} KB/s';
+      bytesPerKb) {
+    final kilobytesPerSecond =
+        bytesPerSecond /
+        bytesPerKb;
+
+    final megabitsPerSecond =
+        bitsPerSecond /
+        bitsPerMbps;
+
+    return '${kilobytesPerSecond.toStringAsFixed(0)} KB/s'
+        ' • ${megabitsPerSecond.toStringAsFixed(2)} Mbps';
   }
 
   return '${bytesPerSecond.toStringAsFixed(0)} B/s';

@@ -2032,9 +2032,9 @@ class _ModelDetailsPageState
             ),
             Text(
               'modelId is persistent in this model config.json and is also '
-              'stored in new Telegram manifests. Upload uses four concurrent '
-              '512 KB Telegram parts. Repair will later verify message IDs '
-              'directly against Telegram.',
+              'stored in new Telegram manifests. Large uploads use up to '
+              'eight parallel MTProto connections with 512 KB parts. Repair '
+              'will later verify message IDs directly against Telegram.',
               style:
                   Theme.of(context)
                       .textTheme
