@@ -9,7 +9,7 @@ typedef TelegramStoragePackageProgress = void Function(double progress, String s
 class TelegramStoragePackager {
   TelegramStoragePackager._();
   static final TelegramStoragePackager instance = TelegramStoragePackager._();
-  static const int maxPartBytes = 1900 * 1024 * 1024;
+  static const int maxPartBytes = 1024 * 1024 * 1024;
   static const int _splitBufferBytes = 8 * 1024 * 1024;
   static const int maxGalleryImages = 10;
 
@@ -45,7 +45,7 @@ class TelegramStoragePackager {
       if (archiveSize <= maxPartBytes) {
         parts.add(TelegramStoragePackagePart(index:1,filePath:archiveFile.path,fileName:archiveFileName,size:archiveSize,sha256:archiveSha256));
       } else {
-        _report(onProgress,0.75,'Archive exceeds 1900 MB. Splitting...');
+        _report(onProgress,0.75,'Archive exceeds 1 GB. Splitting...');
         final splitParts = await _splitArchive(archiveFile:archiveFile,archiveSize:archiveSize,archiveFileName:archiveFileName,onProgress:(copied,total)=>_report(onProgress,0.75+(total<=0?0:copied/total)*0.12,'Splitting archive...'));
         _report(onProgress,0.88,'Calculating part checksums...');
         for (var i=0;i<splitParts.length;i++) {

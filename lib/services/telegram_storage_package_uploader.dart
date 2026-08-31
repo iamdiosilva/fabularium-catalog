@@ -26,7 +26,6 @@ class TelegramStoragePackageUploader {
   final TelegramStorageUploadJournalService _journalService =
       TelegramStorageUploadJournalService.instance;
 
-  static const int _partsPerDocumentGroup = 10;
 
   Future<TelegramStoragePackageUploadResult> uploadPackage({
     required TelegramStorageWorkspace workspace,
@@ -54,9 +53,12 @@ class TelegramStoragePackageUploader {
       );
     }
 
-    final plans = _createFileGroupPlans(package);
-
     final existingJournal = await _journalService.load(package.packageId);
+
+    final plans = _createFileGroupPlans(
+      package,
+      existingJournal,
+    );
 
     if (existingJournal != null &&
         (existingJournal.catalogChannel.id != catalogChannel.id ||
@@ -452,29 +454,85 @@ class TelegramStoragePackageUploader {
 
   List<_FileGroupPlan> _createFileGroupPlans(
     TelegramStoragePackage package,
+    TelegramStorageUploadJournal? existingJournal,
   ) {
     final sorted = List<TelegramStoragePackagePart>.from(package.parts)
       ..sort((a, b) => a.index.compareTo(b.index));
 
-    final result = <_FileGroupPlan>[];
-    var offset = 0;
-    var groupIndex = 1;
+    final byIndex = <int, TelegramStoragePackagePart>{
+      for (final part in sorted) part.index: part,
+    };
 
-    while (offset < sorted.length) {
-      final remaining = sorted.length - offset;
-      final count = min<int>(_partsPerDocumentGroup, remaining);
+    final result = <_FileGroupPlan>[];
+    final usedPartIndexes = <int>{};
+    var highestExistingGroupIndex = 0;
+
+    // Preserve complete groups created by older Fabularium versions. Older
+    // packages could contain up to ten storage parts in one Telegram album.
+    // Keeping those plans intact means VERIFIED/Resume/Repair remain
+    // compatible after switching new uploads to one 1 GB part per group.
+    if (existingJournal != null && existingJournal.fileGroups.isNotEmpty) {
+      final existingGroups = existingJournal.fileGroups.values.toList()
+        ..sort((a, b) => a.groupIndex.compareTo(b.groupIndex));
+
+      for (final group in existingGroups) {
+        highestExistingGroupIndex =
+            max<int>(highestExistingGroupIndex, group.groupIndex);
+
+        final partIndexes = group.partMessageIds.keys.toList()..sort();
+        if (partIndexes.isEmpty) {
+          continue;
+        }
+
+        final parts = <TelegramStoragePackagePart>[];
+        var valid = true;
+
+        for (final partIndex in partIndexes) {
+          final part = byIndex[partIndex];
+          if (part == null) {
+            valid = false;
+            break;
+          }
+
+          parts.add(part);
+        }
+
+        if (!valid || parts.isEmpty) {
+          continue;
+        }
+
+        result.add(
+          _FileGroupPlan(
+            groupIndex: group.groupIndex,
+            parts: parts,
+          ),
+        );
+
+        usedPartIndexes.addAll(partIndexes);
+      }
+    }
+
+    // Reliability V5: every new storage part gets its own Telegram group.
+    // With the 1 GB packager this gives us a durable checkpoint after each
+    // gigabyte instead of waiting for a multi-gigabyte album to finish.
+    var nextGroupIndex = highestExistingGroupIndex + 1;
+
+    for (final part in sorted) {
+      if (usedPartIndexes.contains(part.index)) {
+        continue;
+      }
 
       result.add(
         _FileGroupPlan(
-          groupIndex: groupIndex,
-          parts: sorted.sublist(offset, offset + count),
+          groupIndex: nextGroupIndex,
+          parts: <TelegramStoragePackagePart>[part],
         ),
       );
 
-      offset += count;
-      groupIndex++;
+      nextGroupIndex++;
     }
 
+    result.sort((a, b) => a.groupIndex.compareTo(b.groupIndex));
     return result;
   }
 

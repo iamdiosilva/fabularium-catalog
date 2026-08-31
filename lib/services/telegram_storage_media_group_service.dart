@@ -40,6 +40,7 @@ class TelegramStorageMediaGroupService {
     final eventPort = ReceivePort(), errorPort = ReceivePort(), exitPort = ReceivePort();
     final completer = Completer<Map<String, dynamic>>();
     Isolate? isolate;
+    Timer? exitGraceTimer;
     late final StreamSubscription<dynamic> eventSubscription, errorSubscription, exitSubscription;
     eventSubscription = eventPort.listen((dynamic raw) {
       if (raw is! Map) return;
@@ -62,7 +63,17 @@ class TelegramStorageMediaGroupService {
       completer.completeError(TelegramStorageMediaGroupException(message));
     });
     exitSubscription = exitPort.listen((_) {
-      if (!completer.isCompleted) completer.completeError(const TelegramStorageMediaGroupException('Telegram media group worker stopped unexpectedly.'));
+      if (completer.isCompleted) return;
+      exitGraceTimer?.cancel();
+      exitGraceTimer = Timer(const Duration(seconds: 2), () {
+        if (!completer.isCompleted) {
+          completer.completeError(
+            const TelegramStorageMediaGroupException(
+              'Telegram media group worker stopped unexpectedly.',
+            ),
+          );
+        }
+      });
     });
     try {
       isolate = await Isolate.spawn<Map<String,dynamic>>(_telegramStorageMediaGroupEntryPoint, <String,dynamic>{
@@ -78,6 +89,7 @@ class TelegramStorageMediaGroupService {
       if (messageIds.length != items.length) throw TelegramStorageMediaGroupException('Telegram returned ${messageIds.length} message IDs for ${items.length} files.');
       return TelegramStorageMediaGroupResult(messageIds: messageIds, groupedId: result['groupedId'] is int ? result['groupedId'] as int : null);
     } finally {
+      exitGraceTimer?.cancel();
       isolate?.kill(priority: Isolate.immediate);
       await eventSubscription.cancel(); await errorSubscription.cancel(); await exitSubscription.cancel();
       eventPort.close(); errorPort.close(); exitPort.close();
@@ -99,7 +111,7 @@ Future<void> _telegramStorageMediaGroupEntryPoint(Map<String,dynamic> bootstrap)
   final telegramClient = TelegramClient.instance;
   TelegramStorageUploadConnectionPool? uploadPool;
   try {
-    final client = await telegramClient.connect();
+    var client = await telegramClient.connect();
     final peer = t.InputPeerChannel(channelId: channelId, accessHash: accessHash);
     final items = rawItems.whereType<Map>().map((raw) => Map<String,dynamic>.from(raw)).toList();
     if (items.isEmpty || items.length > 10) throw Exception('Invalid media group size.');
@@ -112,10 +124,10 @@ Future<void> _telegramStorageMediaGroupEntryPoint(Map<String,dynamic> bootstrap)
     final uploadClients = <dynamic>[client]; int uploadSocketCount = 1;
     if (hasLargeFile) {
       uploadClients..clear()..addAll(List<dynamic>.filled(4, client));
-      _sendProgress(eventPort, 0, 'Opening 12 Telegram upload connections...');
+      _sendProgress(eventPort, 0, 'Opening 8 Telegram upload connections...');
       uploadPool = TelegramStorageUploadConnectionPool(telegramClient: telegramClient);
       try {
-        await uploadPool.open(size: 12);
+        await uploadPool.open(size: 8);
         uploadClients..clear()..addAll(uploadPool.clients); uploadSocketCount = uploadPool.size;
         _sendProgress(eventPort, 0, '$uploadSocketCount Telegram upload connections ready.');
       } catch (_) {
@@ -133,32 +145,152 @@ Future<void> _telegramStorageMediaGroupEntryPoint(Map<String,dynamic> bootstrap)
       final caption = item['caption']?.toString() ?? ''; final randomId = item['randomId'] as int; final kind = item['kind']?.toString();
       final file = File(path); final fileSize = await file.length();
       _sendProgress(eventPort, completedBytes / totalBytes * 0.9, 'Preparing ${index+1}/${items.length}: $fileName');
-      final inputFile = await _uploadInputFile(uploadClients: uploadClients, file: file, fileName: fileName, onBytesUploaded: (uploadedBytes) {
-        final totalUploaded = completedBytes + uploadedBytes;
-        final rate = tracker.format(totalUploaded);
-        final connectionLabel = uploadSocketCount > 1 ? ' • $uploadSocketCount connections' : '';
-        _sendProgress(eventPort, totalUploaded / totalBytes * 0.88, 'Uploading ${index+1}/${items.length}: $fileName$connectionLabel${rate == null ? '' : ' • $rate'}');
-      });
-      final t.InputMediaBase uploadedMedia = kind == TelegramStorageMediaKind.photo.name
-          ? t.InputMediaUploadedPhoto(livePhoto: false, spoiler: false, file: inputFile)
-          : t.InputMediaUploadedDocument(nosoundVideo: false, forceFile: true, spoiler: false, file: inputFile, mimeType: mimeType,
-              attributes: <t.DocumentAttributeBase>[t.DocumentAttributeFilename(fileName: fileName)]);
-      final uploadMediaResponse = await client.invoke(t.MessagesUploadMedia(peer: peer, media: uploadedMedia)).timeout(const Duration(seconds:90));
-      if (uploadMediaResponse.error != null) throw Exception('messages.uploadMedia failed for $fileName: ${uploadMediaResponse.error!.errorMessage}');
-      final remoteMedia = _convertUploadedMedia(uploadMediaResponse.result);
-      prepared.add(t.InputSingleMedia(media: remoteMedia, randomId: randomId, message: caption)); randomIds.add(randomId); completedBytes += fileSize;
-      _sendProgress(eventPort, completedBytes / totalBytes * 0.9, 'Prepared ${index+1}/${items.length}.');
+      final inputFile = await _uploadInputFile(
+        uploadClients: uploadClients,
+        file: file,
+        fileName: fileName,
+        onBytesUploaded: (uploadedBytes) {
+          final totalUploaded = completedBytes + uploadedBytes;
+          final rate = tracker.format(totalUploaded);
+          final connectionLabel = uploadSocketCount > 1 ? ' • $uploadSocketCount connections' : '';
+          _sendProgress(eventPort, totalUploaded / totalBytes * 0.88, 'Uploading ${index+1}/${items.length}: $fileName$connectionLabel${rate == null ? '' : ' • $rate'}');
+        },
+        onRetry: (partIndex, totalParts, attempt, maxAttempts) {
+          _sendProgress(
+            eventPort,
+            completedBytes / totalBytes * 0.88,
+            'Retrying chunk ${partIndex+1}/$totalParts for ${index+1}/${items.length}: $fileName • attempt $attempt/$maxAttempts',
+          );
+        },
+      );
+      final isPhoto = kind == TelegramStorageMediaKind.photo.name;
+      final t.InputMediaBase uploadedMedia = isPhoto
+          ? t.InputMediaUploadedPhoto(
+              livePhoto: false,
+              spoiler: false,
+              file: inputFile,
+            )
+          : t.InputMediaUploadedDocument(
+              nosoundVideo: false,
+              forceFile: true,
+              spoiler: false,
+              file: inputFile,
+              mimeType: mimeType,
+              attributes: <t.DocumentAttributeBase>[
+                t.DocumentAttributeFilename(fileName: fileName),
+              ],
+            );
+
+      if (isPhoto) {
+        // Gallery uploads are small. Keep the existing uploadMedia conversion
+        // so albums continue to behave exactly as before.
+        _sendProgress(
+          eventPort,
+          (completedBytes + fileSize) / totalBytes * 0.88,
+          'Finalizing ${index+1}/${items.length}: $fileName...',
+        );
+
+        final uploadMediaResponse = await client
+            .invoke(t.MessagesUploadMedia(peer: peer, media: uploadedMedia))
+            .timeout(const Duration(minutes: 5));
+
+        if (uploadMediaResponse.error != null) {
+          throw Exception(
+            'messages.uploadMedia failed for $fileName: '
+            '${uploadMediaResponse.error!.errorMessage}',
+          );
+        }
+
+        final remoteMedia = _convertUploadedMedia(uploadMediaResponse.result);
+        prepared.add(
+          t.InputSingleMedia(
+            media: remoteMedia,
+            randomId: randomId,
+            message: caption,
+          ),
+        );
+
+        completedBytes += fileSize;
+        randomIds.add(randomId);
+
+        _sendProgress(
+          eventPort,
+          completedBytes / totalBytes * 0.9,
+          'Finalized ${index+1}/${items.length}: $fileName',
+        );
+      } else {
+        // Large documents can be published directly from
+        // InputMediaUploadedDocument. Calling messages.uploadMedia here adds
+        // an unnecessary server-side conversion step that was timing out
+        // after exactly five minutes for ~1 GB parts.
+        prepared.add(
+          t.InputSingleMedia(
+            media: uploadedMedia,
+            randomId: randomId,
+            message: caption,
+          ),
+        );
+
+        completedBytes += fileSize;
+        randomIds.add(randomId);
+
+        _sendProgress(
+          eventPort,
+          completedBytes / totalBytes * 0.9,
+          'Uploaded ${index+1}/${items.length}: $fileName • ready to publish',
+        );
+      }
     }
-    _sendProgress(eventPort, 0.94, prepared.length == 1 ? 'Publishing media...' : 'Publishing media group...');
-    dynamic updates;
-    if (prepared.length == 1) {
-      final item = prepared.first;
-      final response = await client.invoke(t.MessagesSendMedia(silent:true, background:true, clearDraft:false, noforwards:false, updateStickersetsOrder:false, invertMedia:false, allowPaidFloodskip:false, peer:peer, media:item.media, message:item.message, randomId:item.randomId)).timeout(const Duration(seconds:90));
-      if (response.error != null) throw Exception(response.error!.errorMessage); updates = response.result;
-    } else {
-      final response = await client.invoke(t.MessagesSendMultiMedia(silent:true, background:true, clearDraft:false, noforwards:false, updateStickersetsOrder:false, invertMedia:false, allowPaidFloodskip:false, peer:peer, multiMedia:prepared)).timeout(const Duration(seconds:90));
-      if (response.error != null) throw Exception(response.error!.errorMessage); updates = response.result;
+    final isDocumentGroup =
+        items.first['kind']?.toString() == TelegramStorageMediaKind.document.name;
+
+    /*
+     * Large uploads can keep the main/control connection idle for many
+     * minutes while the 8 auxiliary upload sessions send file chunks.
+     *
+     * On some networks that idle TCP session becomes half-open. The file
+     * chunks are already safely stored by Telegram, but the following
+     * messages.sendMedia call then waits forever on the stale control socket.
+     *
+     * Close the bulk pool first and establish a fresh control connection
+     * before publishing the uploaded InputFileBig.
+     */
+    if (isDocumentGroup) {
+      _sendProgress(
+        eventPort,
+        0.92,
+        'Refreshing Telegram control connection...',
+      );
+
+      if (uploadPool != null) {
+        try {
+          await uploadPool.close();
+        } catch (_) {}
+
+        uploadPool = null;
+      }
+
+      try {
+        await telegramClient.disconnect();
+      } catch (_) {}
+
+      client = await telegramClient.connect();
+
+      _sendProgress(
+        eventPort,
+        0.93,
+        'Telegram control connection ready.',
+      );
     }
+
+    final updates = await _publishPreparedMediaWithRetry(
+      telegramClient: telegramClient,
+      initialClient: client,
+      eventPort: eventPort,
+      peer: peer,
+      prepared: prepared,
+      isDocumentGroup: isDocumentGroup,
+    );
     final parsed = _extractSentGroup(updates: updates, randomIds: randomIds);
     _sendProgress(eventPort,1,'Published successfully.');
     eventPort.send(<String,dynamic>{'type':'completed','result':<String,dynamic>{'messageIds':parsed.messageIds,'groupedId':parsed.groupedId}});
@@ -170,35 +302,331 @@ Future<void> _telegramStorageMediaGroupEntryPoint(Map<String,dynamic> bootstrap)
   }
 }
 
-Future<t.InputFileBase> _uploadInputFile({required List<dynamic> uploadClients, required File file, required String fileName, required void Function(int uploadedBytes) onBytesUploaded}) async {
-  final size = await file.length(); if (size <= 0) throw Exception('Cannot upload empty file: $fileName');
-  const int partSize = 512 * 1024; if (uploadClients.isEmpty) throw Exception('No Telegram upload connections are available.');
-  final workerCount = min<int>(12, uploadClients.length); final totalParts = (size + partSize - 1) ~/ partSize; final isBig = size >= 10*1024*1024; final fileId = _random64();
-  int nextPart = 0, uploaded = 0;
+typedef _UploadChunkRetryCallback = void Function(
+  int partIndex,
+  int totalParts,
+  int attempt,
+  int maxAttempts,
+);
+
+Future<t.InputFileBase> _uploadInputFile({
+  required List<dynamic> uploadClients,
+  required File file,
+  required String fileName,
+  required void Function(int uploadedBytes) onBytesUploaded,
+  required _UploadChunkRetryCallback onRetry,
+}) async {
+  final size = await file.length();
+  if (size <= 0) throw Exception('Cannot upload empty file: $fileName');
+
+  const int partSize = 512 * 1024;
+  if (uploadClients.isEmpty) {
+    throw Exception('No Telegram upload connections are available.');
+  }
+
+  final workerCount = min<int>(8, uploadClients.length);
+  final totalParts = (size + partSize - 1) ~/ partSize;
+  final isBig = size >= 10 * 1024 * 1024;
+  final fileId = _random64();
+
+  int nextPart = 0;
+  int uploaded = 0;
+
   Future<void> runWorker(int workerIndex) async {
-    final client = uploadClients[workerIndex % uploadClients.length]; RandomAccessFile? input;
+    RandomAccessFile? input;
     try {
       input = await file.open(mode: FileMode.read);
       while (true) {
-        final partIndex = nextPart; if (partIndex >= totalParts) break; nextPart++;
-        final offset = partIndex * partSize; final remaining = size - offset; final readLength = min<int>(partSize, remaining);
-        await input.setPosition(offset); final bytes = await input.read(readLength);
-        if (bytes.length != readLength) throw Exception('Unexpected EOF while uploading $fileName at part ${partIndex+1}/$totalParts.');
-        await _saveFilePart(client:client,isBig:isBig,fileId:fileId,partIndex:partIndex,totalParts:totalParts,bytes:bytes,fileName:fileName);
-        uploaded += bytes.length; onBytesUploaded(uploaded);
+        final partIndex = nextPart;
+        if (partIndex >= totalParts) break;
+        nextPart++;
+
+        final offset = partIndex * partSize;
+        final remaining = size - offset;
+        final readLength = min<int>(partSize, remaining);
+
+        await input.setPosition(offset);
+        final bytes = await input.read(readLength);
+
+        if (bytes.length != readLength) {
+          throw Exception(
+            'Unexpected EOF while uploading $fileName at chunk '
+            '${partIndex + 1}/$totalParts.',
+          );
+        }
+
+        await _saveFilePartWithRetry(
+          uploadClients: uploadClients,
+          preferredClientIndex: workerIndex,
+          isBig: isBig,
+          fileId: fileId,
+          partIndex: partIndex,
+          totalParts: totalParts,
+          bytes: bytes,
+          fileName: fileName,
+          onRetry: onRetry,
+        );
+
+        uploaded += bytes.length;
+        onBytesUploaded(uploaded);
       }
-    } finally { try { await input?.close(); } catch (_) {} }
+    } finally {
+      try {
+        await input?.close();
+      } catch (_) {}
+    }
   }
-  await Future.wait(List<Future<void>>.generate(workerCount, runWorker));
-  if (uploaded != size) throw Exception('Upload byte count mismatch for $fileName: $uploaded/$size.');
-  return isBig ? t.InputFileBig(id:fileId, parts:totalParts, name:fileName) : t.InputFile(id:fileId, parts:totalParts, name:fileName, md5Checksum:'');
+
+  await Future.wait(
+    List<Future<void>>.generate(workerCount, runWorker),
+  );
+
+  if (uploaded != size) {
+    throw Exception('Upload byte count mismatch for $fileName: $uploaded/$size.');
+  }
+
+  return isBig
+      ? t.InputFileBig(id: fileId, parts: totalParts, name: fileName)
+      : t.InputFile(
+          id: fileId,
+          parts: totalParts,
+          name: fileName,
+          md5Checksum: '',
+        );
 }
 
-Future<void> _saveFilePart({required dynamic client, required bool isBig, required int fileId, required int partIndex, required int totalParts, required Uint8List bytes, required String fileName}) async {
-  final response = isBig
-      ? await client.invoke(t.UploadSaveBigFilePart(fileId:fileId,filePart:partIndex,fileTotalParts:totalParts,bytes:bytes)).timeout(const Duration(seconds:60))
-      : await client.invoke(t.UploadSaveFilePart(fileId:fileId,filePart:partIndex,bytes:bytes)).timeout(const Duration(seconds:60));
-  if (response.error != null) throw Exception('Upload failed on part ${partIndex+1}/$totalParts for $fileName: ${response.error!.errorMessage}');
+Future<void> _saveFilePartWithRetry({
+  required List<dynamic> uploadClients,
+  required int preferredClientIndex,
+  required bool isBig,
+  required int fileId,
+  required int partIndex,
+  required int totalParts,
+  required Uint8List bytes,
+  required String fileName,
+  required _UploadChunkRetryCallback onRetry,
+}) async {
+  const int maxAttempts = 3;
+  const requestTimeout = Duration(seconds: 90);
+
+  Object? lastError;
+
+  for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+    final clientIndex =
+        (preferredClientIndex + attempt - 1) % uploadClients.length;
+    final client = uploadClients[clientIndex];
+
+    try {
+      final response = isBig
+          ? await client
+              .invoke(
+                t.UploadSaveBigFilePart(
+                  fileId: fileId,
+                  filePart: partIndex,
+                  fileTotalParts: totalParts,
+                  bytes: bytes,
+                ),
+              )
+              .timeout(requestTimeout)
+          : await client
+              .invoke(
+                t.UploadSaveFilePart(
+                  fileId: fileId,
+                  filePart: partIndex,
+                  bytes: bytes,
+                ),
+              )
+              .timeout(requestTimeout);
+
+      if (response.error != null) {
+        throw Exception(
+          'Telegram returned ${response.error!.errorMessage}',
+        );
+      }
+
+      return;
+    } catch (error) {
+      lastError = error;
+
+      if (attempt >= maxAttempts) break;
+
+      onRetry(
+        partIndex,
+        totalParts,
+        attempt + 1,
+        maxAttempts,
+      );
+
+      final backoffSeconds = 1 << (attempt - 1);
+      await Future<void>.delayed(
+        Duration(seconds: backoffSeconds),
+      );
+    }
+  }
+
+  throw Exception(
+    'Upload failed after $maxAttempts attempts on chunk '
+    '${partIndex + 1}/$totalParts for $fileName. Last error: $lastError',
+  );
+}
+
+
+Future<dynamic> _publishPreparedMediaWithRetry({
+  required TelegramClient telegramClient,
+  required dynamic initialClient,
+  required SendPort eventPort,
+  required t.InputPeerBase peer,
+  required List<t.InputSingleMedia> prepared,
+  required bool isDocumentGroup,
+}) async {
+  if (prepared.isEmpty) {
+    throw Exception('No uploaded media is available for publishing.');
+  }
+
+  const maxAttempts = 3;
+  const publishTimeout = Duration(minutes: 5);
+
+  dynamic client = initialClient;
+  Object? lastError;
+
+  for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1) {
+      _sendProgress(
+        eventPort,
+        0.94,
+        'Reconnecting before publish retry $attempt/$maxAttempts...',
+      );
+
+      try {
+        await telegramClient.disconnect();
+      } catch (_) {}
+
+      await Future<void>.delayed(
+        Duration(seconds: attempt == 2 ? 2 : 5),
+      );
+
+      client = await telegramClient.connect();
+    }
+
+    _sendProgress(
+      eventPort,
+      0.95,
+      isDocumentGroup
+          ? (prepared.length == 1
+              ? 'Publishing uploaded file • attempt $attempt/$maxAttempts...'
+              : 'Publishing uploaded file group • attempt $attempt/$maxAttempts...')
+          : (prepared.length == 1
+              ? 'Publishing media...'
+              : 'Publishing media group...'),
+    );
+
+    try {
+      dynamic response;
+
+      if (prepared.length == 1) {
+        final item = prepared.first;
+
+        response = await client
+            .invoke(
+              t.MessagesSendMedia(
+                silent: true,
+                background: true,
+                clearDraft: false,
+                noforwards: false,
+                updateStickersetsOrder: false,
+                invertMedia: false,
+                allowPaidFloodskip: false,
+                peer: peer,
+                media: item.media,
+                message: item.message,
+                randomId: item.randomId,
+              ),
+            )
+            .timeout(publishTimeout);
+      } else {
+        response = await client
+            .invoke(
+              t.MessagesSendMultiMedia(
+                silent: true,
+                background: true,
+                clearDraft: false,
+                noforwards: false,
+                updateStickersetsOrder: false,
+                invertMedia: false,
+                allowPaidFloodskip: false,
+                peer: peer,
+                multiMedia: prepared,
+              ),
+            )
+            .timeout(publishTimeout);
+      }
+
+      if (response.error != null) {
+        final message = response.error!.errorMessage.toString();
+
+        /*
+         * These indicate invalid upload data rather than an unstable control
+         * connection, so retrying the same request cannot repair them.
+         */
+        if (_isNonRetryablePublishError(message)) {
+          throw _NonRetryableTelegramPublishException(message);
+        }
+
+        throw Exception(message);
+      }
+
+      if (response.result == null) {
+        throw Exception('Telegram returned an empty publish response.');
+      }
+
+      return response.result;
+    } on _NonRetryableTelegramPublishException {
+      rethrow;
+    } catch (error) {
+      lastError = error;
+
+      if (!isDocumentGroup || attempt >= maxAttempts) {
+        break;
+      }
+
+      _sendProgress(
+        eventPort,
+        0.95,
+        'Publish attempt $attempt/$maxAttempts failed. '
+        'Refreshing control connection...',
+      );
+    }
+  }
+
+  throw Exception(
+    'Telegram could not publish the uploaded file after '
+    '$maxAttempts attempts. Last error: $lastError',
+  );
+}
+
+bool _isNonRetryablePublishError(String message) {
+  const markers = <String>[
+    'FILE_PARTS_INVALID',
+    'FILE_PART_LENGTH_INVALID',
+    'INPUT_FILE_INVALID',
+    'MEDIA_FILE_INVALID',
+    'MEDIA_INVALID',
+    'CHAT_WRITE_FORBIDDEN',
+    'CHANNEL_PRIVATE',
+    'CHANNEL_INVALID',
+    'CHAT_ADMIN_REQUIRED',
+  ];
+
+  return markers.any(message.contains);
+}
+
+class _NonRetryableTelegramPublishException implements Exception {
+  final String message;
+
+  const _NonRetryableTelegramPublishException(this.message);
+
+  @override
+  String toString() => message;
 }
 
 t.InputMediaBase _convertUploadedMedia(dynamic result) {
