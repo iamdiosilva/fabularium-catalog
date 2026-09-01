@@ -5,9 +5,11 @@ import 'dart:math';
 import 'package:path/path.dart' as p;
 
 import '../models/telegram_storage_package.dart';
+import '../models/telegram_storage_channel.dart';
 import '../models/telegram_storage_upload_journal.dart';
 import '../models/telegram_storage_workspace.dart';
 import 'telegram_storage_media_group_service.dart';
+import 'telegram_storage_media_group_consolidation_service.dart';
 import 'telegram_storage_upload_journal_service.dart';
 
 typedef TelegramStoragePackageUploadProgressCallback = void Function(
@@ -22,6 +24,9 @@ class TelegramStoragePackageUploader {
 
   final TelegramStorageMediaGroupService _mediaGroups =
       TelegramStorageMediaGroupService.instance;
+
+  final TelegramStorageMediaGroupConsolidationService _consolidation =
+      TelegramStorageMediaGroupConsolidationService.instance;
 
   final TelegramStorageUploadJournalService _journalService =
       TelegramStorageUploadJournalService.instance;
@@ -87,7 +92,12 @@ class TelegramStoragePackageUploader {
 
     await _journalService.save(journal);
 
-    if (_isJournalComplete(
+    if (!journal.hasPendingFileMessageCleanup &&
+        _hasFinalGroupedFileLayout(
+          package: package,
+          journal: journal,
+        ) &&
+        _isJournalComplete(
       journal: journal,
       package: package,
       plans: plans,
@@ -116,6 +126,18 @@ class TelegramStoragePackageUploader {
     var reusedParts = 0;
 
     try {
+      // ========================================================
+      // 0. CLEANUP INTERRUPTED CONSOLIDATION
+      // ========================================================
+
+      if (journal.hasPendingFileMessageCleanup) {
+        journal = await _cleanupPendingCheckpointMessages(
+          journal: journal,
+          onProgress: onProgress,
+          package: package,
+        );
+      }
+
       // ========================================================
       // 1. CATALOG GALLERY
       // ========================================================
@@ -304,6 +326,17 @@ class TelegramStoragePackageUploader {
       }
 
       // ========================================================
+      // 2.5 CONSOLIDATE CHECKPOINT FILES INTO TELEGRAM GROUPS
+      // ========================================================
+
+      journal = await _consolidateCheckpointFileGroups(
+        package: package,
+        journal: journal,
+        filesChannel: filesChannel,
+        onProgress: onProgress,
+      );
+
+      // ========================================================
       // 3. FINAL MANIFEST V3
       // ========================================================
 
@@ -450,6 +483,296 @@ class TelegramStoragePackageUploader {
         }
       }
     }
+  }
+
+  Future<TelegramStorageUploadJournal> _cleanupPendingCheckpointMessages({
+    required TelegramStorageUploadJournal journal,
+    required TelegramStoragePackage package,
+    TelegramStoragePackageUploadProgressCallback? onProgress,
+  }) async {
+    final pending = journal.pendingFileMessageIdsToDelete
+        .where((id) => id > 0)
+        .toSet()
+        .toList()
+      ..sort();
+
+    if (pending.isEmpty) {
+      return journal.copyWith(
+        pendingFileMessageIdsToDelete: const <int>[],
+      );
+    }
+
+    _report(
+      onProgress,
+      overallProgress: 0.94,
+      stage: 'Removing temporary Telegram checkpoint messages...',
+      currentPart: package.partCount,
+      totalParts: package.partCount,
+      currentFileName: null,
+      currentFileProgress: 1,
+    );
+
+    await _consolidation.deleteMessages(
+      channel: journal.filesChannel,
+      messageIds: pending,
+    );
+
+    final updated = journal.copyWith(
+      pendingFileMessageIdsToDelete: const <int>[],
+    );
+
+    await _journalService.save(updated);
+
+    return updated;
+  }
+
+  Future<TelegramStorageUploadJournal> _consolidateCheckpointFileGroups({
+    required TelegramStoragePackage package,
+    required TelegramStorageUploadJournal journal,
+    required TelegramStorageChannel filesChannel,
+    TelegramStoragePackageUploadProgressCallback? onProgress,
+  }) async {
+    if (package.parts.length <= 1) {
+      return journal;
+    }
+
+    if (_hasFinalGroupedFileLayout(
+      package: package,
+      journal: journal,
+    )) {
+      return journal;
+    }
+
+    final sortedParts = List<TelegramStoragePackagePart>.from(
+      package.parts,
+    )..sort((a, b) => a.index.compareTo(b.index));
+
+    final sourceMessageByPart = <int, int>{};
+
+    for (final group in journal.fileGroups.values) {
+      sourceMessageByPart.addAll(
+        group.partMessageIds,
+      );
+    }
+
+    for (final part in sortedParts) {
+      final sourceId = sourceMessageByPart[part.index];
+
+      if (sourceId == null || sourceId <= 0) {
+        throw TelegramStoragePackageUploadException(
+          'Cannot consolidate Telegram file groups because part '
+          '${part.index} has no checkpoint message ID.',
+        );
+      }
+    }
+
+    final oldMessageIds = journal.fileGroups.values
+        .expand((group) => group.messageIds)
+        .where((id) => id > 0)
+        .toSet()
+        .toList()
+      ..sort();
+
+    final finalGroups = <int, TelegramStorageUploadJournalGroup>{};
+    final finalMessageIds = <int>{};
+
+    const maxTelegramGroupItems = 10;
+
+    final totalGroups =
+        (sortedParts.length + maxTelegramGroupItems - 1) ~/
+            maxTelegramGroupItems;
+
+    for (var offset = 0;
+        offset < sortedParts.length;
+        offset += maxTelegramGroupItems) {
+      final end = min<int>(
+        offset + maxTelegramGroupItems,
+        sortedParts.length,
+      );
+
+      final parts = sortedParts.sublist(
+        offset,
+        end,
+      );
+
+      final groupIndex =
+          (offset ~/ maxTelegramGroupItems) + 1;
+
+      if (parts.length == 1) {
+        final part = parts.single;
+        final messageId = sourceMessageByPart[part.index]!;
+
+        finalGroups[groupIndex] =
+            TelegramStorageUploadJournalGroup(
+          groupIndex: groupIndex,
+          groupedId: null,
+          messageIds: <int>[messageId],
+          partMessageIds: <int, int>{
+            part.index: messageId,
+          },
+        );
+
+        finalMessageIds.add(messageId);
+        continue;
+      }
+
+      _report(
+        onProgress,
+        overallProgress: 0.92 +
+            ((groupIndex - 1) / totalGroups) * 0.02,
+        stage: 'Grouping Telegram files $groupIndex/$totalGroups...',
+        currentPart: parts.first.index,
+        totalParts: package.partCount,
+        currentFileName: parts.first.fileName,
+        currentFileProgress: 1,
+      );
+
+      final sourceIds = parts
+          .map((part) => sourceMessageByPart[part.index]!)
+          .toList();
+
+      final result = await _consolidation.groupExistingDocuments(
+        channel: filesChannel,
+        sourceMessageIds: sourceIds,
+        randomIdKeys: parts
+            .map(
+              (part) => '${package.packageId}'
+                  ':storage:consolidated:$groupIndex'
+                  ':part:${part.index}',
+            )
+            .toList(),
+        caption: _buildFilesCaption(
+          package: package,
+          groupIndex: groupIndex,
+          totalGroups: totalGroups,
+        ),
+      );
+
+      if (result.messageIds.length != parts.length) {
+        throw const TelegramStoragePackageUploadException(
+          'Telegram returned an incomplete consolidated file group.',
+        );
+      }
+
+      final partMessageIds = <int, int>{};
+
+      for (var index = 0; index < parts.length; index++) {
+        partMessageIds[parts[index].index] =
+            result.messageIds[index];
+
+        finalMessageIds.add(
+          result.messageIds[index],
+        );
+      }
+
+      finalGroups[groupIndex] =
+          TelegramStorageUploadJournalGroup(
+        groupIndex: groupIndex,
+        groupedId: result.groupedId,
+        messageIds: result.messageIds,
+        partMessageIds: partMessageIds,
+      );
+    }
+
+    final pendingDelete = oldMessageIds
+        .where((id) => !finalMessageIds.contains(id))
+        .toSet();
+
+    /*
+     * If this package was already STORED by Reliability V6, its manifest
+     * contains the old per-checkpoint message IDs. Consolidation changes those
+     * IDs, so the old manifest must be removed and republished after the final
+     * Telegram groups are saved.
+     */
+    final staleManifestId = journal.manifestMessageId;
+
+    if (staleManifestId != null && staleManifestId > 0) {
+      pendingDelete.add(staleManifestId);
+    }
+
+    final orderedPendingDelete = pendingDelete.toList()..sort();
+
+    /*
+     * Save the final album IDs before deleting superseded checkpoint/manifest
+     * messages. If the application closes during cleanup, Resume sees the
+     * final group plus pendingFileMessageIdsToDelete and safely retries only
+     * cleanup before creating a fresh manifest.
+     */
+    var updated = journal.copyWith(
+      fileGroups: finalGroups,
+      manifestMessageId: null,
+      pendingFileMessageIdsToDelete: orderedPendingDelete,
+    );
+
+    await _journalService.save(updated);
+
+    if (pendingDelete.isNotEmpty) {
+      updated = await _cleanupPendingCheckpointMessages(
+        journal: updated,
+        package: package,
+        onProgress: onProgress,
+      );
+    }
+
+    return updated;
+  }
+
+  bool _hasFinalGroupedFileLayout({
+    required TelegramStoragePackage package,
+    required TelegramStorageUploadJournal journal,
+  }) {
+    final sortedParts = List<TelegramStoragePackagePart>.from(
+      package.parts,
+    )..sort((a, b) => a.index.compareTo(b.index));
+
+    const maxTelegramGroupItems = 10;
+
+    final expectedGroupCount =
+        (sortedParts.length + maxTelegramGroupItems - 1) ~/
+            maxTelegramGroupItems;
+
+    if (journal.fileGroups.length != expectedGroupCount) {
+      return false;
+    }
+
+    for (var offset = 0;
+        offset < sortedParts.length;
+        offset += maxTelegramGroupItems) {
+      final end = min<int>(
+        offset + maxTelegramGroupItems,
+        sortedParts.length,
+      );
+
+      final expectedParts = sortedParts.sublist(
+        offset,
+        end,
+      );
+
+      final groupIndex =
+          (offset ~/ maxTelegramGroupItems) + 1;
+
+      final group = journal.fileGroups[groupIndex];
+
+      if (group == null ||
+          group.messageIds.length != expectedParts.length) {
+        return false;
+      }
+
+      if (expectedParts.length > 1 &&
+          group.groupedId == null) {
+        return false;
+      }
+
+      for (final part in expectedParts) {
+        final id = group.partMessageIds[part.index];
+
+        if (id == null || id <= 0) {
+          return false;
+        }
+      }
+    }
+
+    return true;
   }
 
   List<_FileGroupPlan> _createFileGroupPlans(
