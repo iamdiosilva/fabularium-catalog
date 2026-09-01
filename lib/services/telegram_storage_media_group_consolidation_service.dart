@@ -15,11 +15,11 @@ class TelegramStorageExistingMediaGroupResult {
   });
 }
 
-/// Converts already-published Telegram document messages into a media group.
+/// Republishes already-published Telegram documents without uploading bytes.
 ///
-/// No file bytes are uploaded here. The source messages are fetched to obtain
-/// fresh Document file references, then messages.sendMultiMedia republishes
-/// those existing documents as one Telegram album/group.
+/// For two to ten documents this produces a Telegram media group with
+/// messages.sendMultiMedia. For a single document it uses messages.sendMedia.
+/// Source messages are fetched first so fresh Document file references are used.
 class TelegramStorageMediaGroupConsolidationService {
   TelegramStorageMediaGroupConsolidationService._();
 
@@ -36,9 +36,9 @@ class TelegramStorageMediaGroupConsolidationService {
   }) async {
     final ids = sourceMessageIds.where((id) => id > 0).toList();
 
-    if (ids.length < 2) {
+    if (ids.isEmpty) {
       throw const TelegramStorageMediaGroupConsolidationException(
-        'At least two Telegram documents are required to create a media group.',
+        'At least one Telegram document is required for consolidation.',
       );
     }
 
@@ -180,23 +180,49 @@ class TelegramStorageMediaGroupConsolidationService {
         );
       }
 
-      final publish = await client
-          .invoke(
-            t.MessagesSendMultiMedia(
-              silent: true,
-              background: true,
-              clearDraft: false,
-              noforwards: false,
-              updateStickersetsOrder: false,
-              invertMedia: false,
-              allowPaidFloodskip: false,
-              peer: peer,
-              multiMedia: media,
-            ),
-          )
-          .timeout(
-            const Duration(minutes: 2),
-          );
+      dynamic publish;
+
+      if (media.length == 1) {
+        final item = media.single;
+
+        publish = await client
+            .invoke(
+              t.MessagesSendMedia(
+                silent: true,
+                background: true,
+                clearDraft: false,
+                noforwards: false,
+                updateStickersetsOrder: false,
+                invertMedia: false,
+                allowPaidFloodskip: false,
+                peer: peer,
+                media: item.media,
+                message: item.message,
+                randomId: item.randomId,
+              ),
+            )
+            .timeout(
+              const Duration(minutes: 2),
+            );
+      } else {
+        publish = await client
+            .invoke(
+              t.MessagesSendMultiMedia(
+                silent: true,
+                background: true,
+                clearDraft: false,
+                noforwards: false,
+                updateStickersetsOrder: false,
+                invertMedia: false,
+                allowPaidFloodskip: false,
+                peer: peer,
+                multiMedia: media,
+              ),
+            )
+            .timeout(
+              const Duration(minutes: 2),
+            );
+      }
 
       if (publish.error != null) {
         throw Exception(publish.error!.errorMessage);
@@ -319,6 +345,19 @@ _SentMediaGroup _extractSentGroup({
     throw const TelegramStorageMediaGroupConsolidationException(
       'Telegram returned no updates for the consolidated media group.',
     );
+  }
+
+  if (updates.runtimeType.toString() == 'UpdateShortSentMessage') {
+    try {
+      final id = updates.id as int;
+
+      if (id > 0 && randomIds.length == 1) {
+        return _SentMediaGroup(
+          messageIds: <int>[id],
+          groupedId: null,
+        );
+      }
+    } catch (_) {}
   }
 
   final mapping = <int, int>{};

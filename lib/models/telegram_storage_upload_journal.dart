@@ -134,6 +134,7 @@ class TelegramStorageUploadJournal {
   final int? galleryGroupedId;
   final List<int> galleryMessageIds;
   final Map<int, TelegramStorageUploadJournalGroup> fileGroups;
+  final int? filesHeaderMessageId;
   final int? manifestMessageId;
   final String? lastError;
 
@@ -154,6 +155,7 @@ class TelegramStorageUploadJournal {
     required this.galleryGroupedId,
     required this.galleryMessageIds,
     required this.fileGroups,
+    this.filesHeaderMessageId,
     required this.manifestMessageId,
     required this.lastError,
     this.pendingFileMessageIdsToDelete = const <int>[],
@@ -176,6 +178,10 @@ class TelegramStorageUploadJournal {
 
   bool get hasGallery =>
       galleryMessageIds.isNotEmpty;
+
+  bool get hasFilesHeader =>
+      filesHeaderMessageId != null &&
+      filesHeaderMessageId! > 0;
 
   bool get hasManifest =>
       manifestMessageId != null &&
@@ -207,6 +213,12 @@ class TelegramStorageUploadJournal {
   List<int> get filesMessageIds {
     final result = <int>{};
 
+    final headerId = filesHeaderMessageId;
+
+    if (headerId != null && headerId > 0) {
+      result.add(headerId);
+    }
+
     final groups = fileGroups.values.toList()
       ..sort(
         (a, b) => a.groupIndex.compareTo(
@@ -227,6 +239,14 @@ class TelegramStorageUploadJournal {
     if (manifestId != null &&
         manifestId > 0) {
       result.add(manifestId);
+    }
+
+    if (isRemoving) {
+      for (final id in pendingFileMessageIdsToDelete) {
+        if (id > 0) {
+          result.add(id);
+        }
+      }
     }
 
     return result.toList()..sort();
@@ -255,6 +275,7 @@ class TelegramStorageUploadJournal {
     Object? galleryGroupedId = _journalUnset,
     List<int>? galleryMessageIds,
     Map<int, TelegramStorageUploadJournalGroup>? fileGroups,
+    Object? filesHeaderMessageId = _journalUnset,
     Object? manifestMessageId = _journalUnset,
     Object? lastError = _journalUnset,
     List<int>? pendingFileMessageIdsToDelete,
@@ -278,6 +299,10 @@ class TelegramStorageUploadJournal {
       fileGroups:
           fileGroups ??
               this.fileGroups,
+      filesHeaderMessageId:
+          identical(filesHeaderMessageId, _journalUnset)
+              ? this.filesHeaderMessageId
+              : filesHeaderMessageId as int?,
       manifestMessageId:
           identical(manifestMessageId, _journalUnset)
               ? this.manifestMessageId
@@ -320,6 +345,7 @@ class TelegramStorageUploadJournal {
             (group) => group.toJson(),
           )
           .toList(),
+      'filesHeaderMessageId': filesHeaderMessageId,
       'manifestMessageId': manifestMessageId,
       'pendingFileMessageIdsToDelete':
           pendingFileMessageIdsToDelete,
@@ -462,6 +488,10 @@ class TelegramStorageUploadJournal {
           galleryMessageIds,
       fileGroups:
           groups,
+      filesHeaderMessageId:
+          _readJournalInt(
+        json['filesHeaderMessageId'],
+      ),
       manifestMessageId:
           _readJournalInt(
         json['manifestMessageId'],

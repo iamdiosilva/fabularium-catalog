@@ -9,6 +9,7 @@ import '../models/telegram_storage_channel.dart';
 import '../models/telegram_storage_upload_journal.dart';
 import '../models/telegram_storage_workspace.dart';
 import 'telegram_storage_media_group_service.dart';
+import 'telegram_storage_files_header_service.dart';
 import 'telegram_storage_media_group_consolidation_service.dart';
 import 'telegram_storage_upload_journal_service.dart';
 
@@ -24,6 +25,9 @@ class TelegramStoragePackageUploader {
 
   final TelegramStorageMediaGroupService _mediaGroups =
       TelegramStorageMediaGroupService.instance;
+
+  final TelegramStorageFilesHeaderService _filesHeader =
+      TelegramStorageFilesHeaderService.instance;
 
   final TelegramStorageMediaGroupConsolidationService _consolidation =
       TelegramStorageMediaGroupConsolidationService.instance;
@@ -86,6 +90,7 @@ class TelegramStoragePackageUploader {
           galleryGroupedId: null,
           galleryMessageIds: const <int>[],
           fileGroups: <int, TelegramStorageUploadJournalGroup>{},
+          filesHeaderMessageId: null,
           manifestMessageId: null,
           lastError: null,
         );
@@ -93,6 +98,8 @@ class TelegramStoragePackageUploader {
     await _journalService.save(journal);
 
     if (!journal.hasPendingFileMessageCleanup &&
+        journal.hasFilesHeader &&
+        _isFilesHeaderBeforeFiles(journal) &&
         _hasFinalGroupedFileLayout(
           package: package,
           journal: journal,
@@ -201,6 +208,34 @@ class TelegramStoragePackageUploader {
       }
 
       // ========================================================
+      // 1.5 FILES HEADER
+      // ========================================================
+
+      if (!journal.hasFilesHeader) {
+        _report(
+          onProgress,
+          overallProgress: 0.10,
+          stage: 'Publishing Telegram Files header...',
+          currentPart: 0,
+          totalParts: package.partCount,
+          currentFileName: null,
+          currentFileProgress: 0,
+        );
+
+        final headerMessageId = await _filesHeader.sendHeader(
+          channel: filesChannel,
+          text: _buildFilesHeader(package),
+          randomIdKey: '${package.packageId}:storage:files-header:v71',
+        );
+
+        journal = journal.copyWith(
+          filesHeaderMessageId: headerMessageId,
+        );
+
+        await _journalService.save(journal);
+      }
+
+      // ========================================================
       // 2. FILE GROUPS
       // ========================================================
 
@@ -231,12 +266,6 @@ class TelegramStoragePackageUploader {
           (total, part) => total + part.size,
         );
         final bytesBeforeGroup = completedFileBytes;
-        final caption = _buildFilesCaption(
-          package: package,
-          groupIndex: plan.groupIndex,
-          totalGroups: plans.length,
-        );
-
         final items = <TelegramStorageMediaItem>[];
 
         for (var index = 0; index < plan.parts.length; index++) {
@@ -248,7 +277,7 @@ class TelegramStoragePackageUploader {
               filePath: part.filePath,
               fileName: part.fileName,
               mimeType: 'application/octet-stream',
-              caption: index == 0 ? caption : '',
+              caption: '',
               randomIdKey: '${package.packageId}'
                   ':storage:group:${plan.groupIndex}'
                   ':part:${part.index}',
@@ -333,6 +362,7 @@ class TelegramStoragePackageUploader {
         package: package,
         journal: journal,
         filesChannel: filesChannel,
+        forceRegroup: !_isFilesHeaderBeforeFiles(journal),
         onProgress: onProgress,
       );
 
@@ -362,7 +392,7 @@ class TelegramStoragePackageUploader {
           fileName: p.basename(package.manifestPath),
           mimeType: 'application/json',
           caption: _buildManifestCaption(package),
-          randomIdKey: '${package.packageId}:storage:manifest:v3',
+          randomIdKey: '${package.packageId}:storage:manifest:v3:v71',
         );
 
         final manifestResult = await _mediaGroups.sendGroup(
@@ -530,16 +560,18 @@ class TelegramStoragePackageUploader {
     required TelegramStoragePackage package,
     required TelegramStorageUploadJournal journal,
     required TelegramStorageChannel filesChannel,
+    required bool forceRegroup,
     TelegramStoragePackageUploadProgressCallback? onProgress,
   }) async {
-    if (package.parts.length <= 1) {
+    if (!forceRegroup && package.parts.length <= 1) {
       return journal;
     }
 
-    if (_hasFinalGroupedFileLayout(
-      package: package,
-      journal: journal,
-    )) {
+    if (!forceRegroup &&
+        _hasFinalGroupedFileLayout(
+          package: package,
+          journal: journal,
+        )) {
       return journal;
     }
 
@@ -598,24 +630,6 @@ class TelegramStoragePackageUploader {
       final groupIndex =
           (offset ~/ maxTelegramGroupItems) + 1;
 
-      if (parts.length == 1) {
-        final part = parts.single;
-        final messageId = sourceMessageByPart[part.index]!;
-
-        finalGroups[groupIndex] =
-            TelegramStorageUploadJournalGroup(
-          groupIndex: groupIndex,
-          groupedId: null,
-          messageIds: <int>[messageId],
-          partMessageIds: <int, int>{
-            part.index: messageId,
-          },
-        );
-
-        finalMessageIds.add(messageId);
-        continue;
-      }
-
       _report(
         onProgress,
         overallProgress: 0.92 +
@@ -637,15 +651,11 @@ class TelegramStoragePackageUploader {
         randomIdKeys: parts
             .map(
               (part) => '${package.packageId}'
-                  ':storage:consolidated:$groupIndex'
+                  ':storage:consolidated:v71:$groupIndex'
                   ':part:${part.index}',
             )
             .toList(),
-        caption: _buildFilesCaption(
-          package: package,
-          groupIndex: groupIndex,
-          totalGroups: totalGroups,
-        ),
+        caption: '',
       );
 
       if (result.messageIds.length != parts.length) {
@@ -890,7 +900,10 @@ class TelegramStoragePackageUploader {
     required TelegramStoragePackage package,
     required List<_FileGroupPlan> plans,
   }) {
-    if (!journal.isStored || !journal.hasManifest) {
+    if (!journal.isStored ||
+        !journal.hasFilesHeader ||
+        !_isFilesHeaderBeforeFiles(journal) ||
+        !journal.hasManifest) {
       return false;
     }
 
@@ -950,6 +963,7 @@ class TelegramStoragePackageUploader {
           'id': journal.filesChannel.id,
           'title': journal.filesChannel.title,
         },
+        'filesHeaderMessageId': journal.filesHeaderMessageId,
         'gallery': <String, dynamic>{
           'groupedId': journal.galleryGroupedId,
           'messageIds': journal.galleryMessageIds,
@@ -1033,18 +1047,37 @@ class TelegramStoragePackageUploader {
     return result.length <= 900 ? result : result.substring(0, 900);
   }
 
-  String _buildFilesCaption({
-    required TelegramStoragePackage package,
-    required int groupIndex,
-    required int totalGroups,
-  }) {
-    final label = totalGroups > 1
-        ? 'Files $groupIndex/$totalGroups'
-        : 'Storage Files';
-
+  String _buildFilesHeader(
+    TelegramStoragePackage package,
+  ) {
     return '[FABULARIUM:${package.packageId}]\n\n'
         '📦 ${package.displayName}\n'
-        '$label';
+        'Storage Files\n'
+        'Parts: ${package.partCount}\n'
+        'Archive: ${_formatBytes(package.archiveSize)}';
+  }
+
+  bool _isFilesHeaderBeforeFiles(
+    TelegramStorageUploadJournal journal,
+  ) {
+    final headerId = journal.filesHeaderMessageId;
+
+    if (headerId == null || headerId <= 0) {
+      return false;
+    }
+
+    final fileMessageIds = journal.fileGroups.values
+        .expand((group) => group.messageIds)
+        .where((id) => id > 0)
+        .toList();
+
+    if (fileMessageIds.isEmpty) {
+      return true;
+    }
+
+    return fileMessageIds.every(
+      (id) => id > headerId,
+    );
   }
 
   String _buildManifestCaption(TelegramStoragePackage package) {

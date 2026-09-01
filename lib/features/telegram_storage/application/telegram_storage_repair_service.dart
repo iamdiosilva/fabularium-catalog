@@ -18,11 +18,12 @@ class TelegramStorageRepairService {
     TelegramStorageVerificationService? verificationService,
     TelegramStorageUploadJournalService? journalService,
     TelegramStorageMessageGateway? messageGateway,
-  })  : verificationService =
-            verificationService ?? TelegramStorageVerificationService.instance,
-        journalService =
-            journalService ?? TelegramStorageUploadJournalService.instance,
-        messageGateway = messageGateway ?? TelegramStorageMessageGateway();
+  })  : verificationService = verificationService ??
+            TelegramStorageVerificationService.instance,
+        journalService = journalService ??
+            TelegramStorageUploadJournalService.instance,
+        messageGateway = messageGateway ??
+            TelegramStorageMessageGateway();
 
   Future<StorageRepairResult> repair({
     required TelegramStorageUploadJournal journal,
@@ -34,7 +35,11 @@ class TelegramStorageRepairService {
       );
     }
 
-    _report(onProgress, 'Verifying recorded Telegram messages...', 0.05);
+    _report(
+      onProgress,
+      'Verifying recorded Telegram messages...',
+      0.05,
+    );
 
     final verification = await verificationService.verifyAndUpdate(
       journal: journal,
@@ -51,9 +56,17 @@ class TelegramStorageRepairService {
 
     if (verification.allPresent) {
       if (!current.isStored) {
-        current = await journalService.markStored(current);
+        current = await journalService.markStored(
+          current,
+        );
       }
-      _report(onProgress, 'Package is already healthy.', 1);
+
+      _report(
+        onProgress,
+        'Package is already healthy.',
+        1,
+      );
+
       return StorageRepairResult(
         packageId: current.packageId,
         alreadyHealthy: true,
@@ -74,68 +87,98 @@ class TelegramStorageRepairService {
     var filesDeleted = 0;
     var fileGroupsReset = 0;
 
-    var galleryMessageIds = List<int>.from(current.galleryMessageIds);
+    var galleryMessageIds = List<int>.from(
+      current.galleryMessageIds,
+    );
+
     var galleryGroupedId = current.galleryGroupedId;
+
     final groups = Map<int, TelegramStorageUploadJournalGroup>.from(
       current.fileGroups,
     );
+
+    var filesHeaderMessageId = current.filesHeaderMessageId;
     var manifestMessageId = current.manifestMessageId;
 
-    final galleryIsPartial =
-        galleryMessageIds.any(missingCatalog.contains);
+    final galleryIsPartial = galleryMessageIds.any(
+      missingCatalog.contains,
+    );
 
     if (galleryIsPartial) {
       final remaining = galleryMessageIds
-          .where((id) => !missingCatalog.contains(id))
+          .where(
+            (id) => !missingCatalog.contains(id),
+          )
           .toList();
+
       _report(
         onProgress,
         'Resetting partial Catalog gallery...',
         0.55,
       );
+
       galleryDeleted = await messageGateway.deleteMessages(
         channel: current.catalogChannel,
         messageIds: remaining,
       );
+
       galleryMessageIds = <int>[];
       galleryGroupedId = null;
       galleryReset = true;
     }
 
+    if (filesHeaderMessageId != null &&
+        missingFiles.contains(filesHeaderMessageId)) {
+      filesHeaderMessageId = null;
+    }
+
     final orderedGroups = groups.values.toList()
-      ..sort((a, b) => a.groupIndex.compareTo(b.groupIndex));
+      ..sort(
+        (a, b) => a.groupIndex.compareTo(
+          b.groupIndex,
+        ),
+      );
 
     for (var i = 0; i < orderedGroups.length; i++) {
       final group = orderedGroups[i];
-      final groupIsPartial = group.messageIds.any(missingFiles.contains);
-      if (!groupIsPartial) continue;
+
+      final groupIsPartial = group.messageIds.any(
+        missingFiles.contains,
+      );
+
+      if (!groupIsPartial) {
+        continue;
+      }
 
       final remaining = group.messageIds
-          .where((id) => !missingFiles.contains(id))
+          .where(
+            (id) => !missingFiles.contains(id),
+          )
           .toList();
+
       _report(
         onProgress,
         'Resetting partial Files group ${group.groupIndex}...',
         0.6 + ((i + 1) / orderedGroups.length) * 0.25,
       );
+
       filesDeleted += await messageGateway.deleteMessages(
         channel: current.filesChannel,
         messageIds: remaining,
       );
+
       groups.remove(group.groupIndex);
       fileGroupsReset++;
     }
 
-    if (manifestMessageId != null && missingFiles.contains(manifestMessageId)) {
+    if (manifestMessageId != null &&
+        missingFiles.contains(manifestMessageId)) {
       manifestMessageId = null;
       manifestReset = true;
     }
 
-    // Gallery and file-group message IDs are embedded in the final manifest.
-    // When Repair resets any of those groups, the old manifest becomes stale
-    // even when the manifest message itself still exists on Telegram. Delete
-    // that stale manifest so Resume is forced to publish a fresh V3 manifest.
-    if ((galleryReset || fileGroupsReset > 0) && manifestMessageId != null) {
+    if ((galleryReset || fileGroupsReset > 0) &&
+        manifestMessageId != null) {
       _report(
         onProgress,
         'Removing stale Storage V3 manifest...',
@@ -151,21 +194,24 @@ class TelegramStorageRepairService {
       manifestReset = true;
     }
 
-    // If the journal was structurally incomplete there may be no IDs to
-    // reset. That is still a valid repair: clearing the REMOTE_MISSING marker
-    // enables Resume to build the missing groups/manifest from local staging.
     current = current.copyWith(
       status: TelegramStorageUploadStatus.failed,
       galleryGroupedId: galleryGroupedId,
       galleryMessageIds: galleryMessageIds,
       fileGroups: groups,
+      filesHeaderMessageId: filesHeaderMessageId,
       manifestMessageId: manifestMessageId,
       lastError: 'Repair completed. Resume will upload only the reset or '
           'missing Storage V3 groups.',
     );
 
     await journalService.save(current);
-    _report(onProgress, 'Repair completed. Resume is available.', 1);
+
+    _report(
+      onProgress,
+      'Repair completed. Resume is available.',
+      1,
+    );
 
     return StorageRepairResult(
       packageId: current.packageId,
@@ -183,14 +229,19 @@ class TelegramStorageRepairService {
     String stage,
     double progress,
   ) {
-    callback?.call(stage, progress.clamp(0.0, 1.0));
+    callback?.call(
+      stage,
+      progress.clamp(0.0, 1.0),
+    );
   }
 }
 
 class TelegramStorageRepairException implements Exception {
   final String message;
 
-  const TelegramStorageRepairException(this.message);
+  const TelegramStorageRepairException(
+    this.message,
+  );
 
   @override
   String toString() => message;
