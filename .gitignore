@@ -48,3 +48,6 @@ app.*.map.json
 telegram_auth.json
 **/telegram_auth.json
 *.part
+
+# Fabularium local Supabase configuration
+config/supabase.local.json

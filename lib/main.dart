@@ -4,6 +4,7 @@ import 'config/fabularium_config.dart';
 import 'pages/catalog_page.dart';
 import 'pages/download_queue_page.dart';
 import 'services/performance_monitor.dart';
+import 'services/supabase_service.dart';
 import 'services/telegram_performance_coordinator.dart';
 import 'widgets/download_queue_overlay.dart';
 
@@ -11,9 +12,12 @@ final GlobalKey<NavigatorState>
     rootNavigatorKey =
     GlobalKey<NavigatorState>();
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding
       .ensureInitialized();
+
+  await SupabaseService.instance
+      .initialize();
 
   PerformanceMonitor.instance
       .start();
