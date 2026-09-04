@@ -1354,11 +1354,9 @@ class _PendingUploadJournal {
   });
 
   List<int> get allMessageIds => <int>{
-        if (headerMessageId != null)
-          headerMessageId!,
+        ?headerMessageId,
         ...fileMessageIds,
-        if (manifestMessageId != null)
-          manifestMessageId!,
+        ?manifestMessageId,
       }.where((id) => id > 0).toList()
         ..sort();
 
