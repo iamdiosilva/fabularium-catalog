@@ -1,7 +1,10 @@
+import 'dart:async' show Timer;
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
+
+import 'package:catalago_fabularium/services/community_pending_storage_service.dart';
 
 Future<void> main(
   List<String> args,
@@ -25,6 +28,29 @@ Future<void> main(
   stdout.writeln(
     '[Fabularium Worker] Data directory: '
     '${config.dataDirectory.path}',
+  );
+
+  stdout.writeln(
+    '[Fabularium Worker] Community V3.2 Pending processor enabled.',
+  );
+
+  unawaited(
+    _processAvailableJobs(
+      config,
+    ),
+  );
+
+  Timer.periodic(
+    const Duration(
+      seconds: 15,
+    ),
+    (_) {
+      unawaited(
+        _processAvailableJobs(
+          config,
+        ),
+      );
+    },
   );
 
   await for (final request
@@ -391,6 +417,12 @@ Future<void> _handleUpload(
           receivedBytes,
     );
 
+    unawaited(
+      _processAvailableJobs(
+        config,
+      ),
+    );
+
     await _json(
       request.response,
       HttpStatus.ok,
@@ -424,6 +456,252 @@ Future<void> _handleUpload(
     } catch (_) {}
 
     rethrow;
+  }
+}
+
+bool _processingSweepActive =
+    false;
+
+final Set<String>
+    _activeSubmissionIds =
+    <String>{};
+
+Future<void> _processAvailableJobs(
+  _WorkerConfig config,
+) async {
+  if (_processingSweepActive) {
+    return;
+  }
+
+  _processingSweepActive =
+      true;
+
+  try {
+    final gateway =
+        _SupabaseGateway(
+      config,
+    );
+
+    final ids =
+        await gateway
+            .listProcessableSubmissionIds();
+
+    for (final id
+        in ids) {
+      await _processSubmission(
+        config,
+        id,
+      );
+    }
+  } catch (error, stackTrace) {
+    stderr.writeln(
+      '[Fabularium Worker] Processing sweep failed: $error',
+    );
+    stderr.writeln(
+      stackTrace,
+    );
+  } finally {
+    _processingSweepActive =
+        false;
+  }
+}
+
+Future<void> _processSubmission(
+  _WorkerConfig config,
+  String submissionId,
+) async {
+  if (!_activeSubmissionIds.add(
+    submissionId,
+  )) {
+    return;
+  }
+
+  final gateway =
+      _SupabaseGateway(
+    config,
+  );
+
+  CommunityPendingStorageResult?
+      pendingResult;
+
+  try {
+    final submission =
+        await gateway
+            .loadSubmissionForProcessing(
+      submissionId,
+    );
+
+    if (submission == null) {
+      return;
+    }
+
+    if (submission.status !=
+            'uploaded' &&
+        submission.status !=
+            'processing') {
+      return;
+    }
+
+    final fileName =
+        submission.archiveFileName;
+
+    if (fileName == null ||
+        fileName.isEmpty) {
+      throw const _WorkerException(
+        'Submission has no staging archive file name.',
+      );
+    }
+
+    final archiveFile =
+        File(
+      p.join(
+        config.dataDirectory.path,
+        'uploads',
+        submissionId,
+        fileName,
+      ),
+    );
+
+    if (!await archiveFile.exists()) {
+      throw _WorkerException(
+        'Worker staging archive not found: ${archiveFile.path}',
+      );
+    }
+
+    final actualSize =
+        await archiveFile.length();
+
+    if (submission.archiveSize >
+            0 &&
+        actualSize !=
+            submission.archiveSize) {
+      throw _WorkerException(
+        'Worker staging archive size mismatch. '
+        'Expected ${submission.archiveSize}, got $actualSize.',
+      );
+    }
+
+    stdout.writeln(
+      '[Fabularium Worker][$submissionId] '
+      'Processing started.',
+    );
+
+    await gateway.beginProcessing(
+      submissionId:
+          submissionId,
+    );
+
+    pendingResult =
+        await CommunityPendingStorageService
+            .instance
+            .store(
+      submissionId:
+          submissionId,
+      archivePath:
+          archiveFile.path,
+      onProgress:
+          (stage) {
+        stdout.writeln(
+          '[Fabularium Worker][$submissionId] $stage',
+        );
+      },
+    );
+
+    await gateway.markPendingReview(
+      submissionId:
+          submissionId,
+      result:
+          pendingResult,
+    );
+
+    try {
+      await gateway.analyzeSubmission(
+        submissionId,
+      );
+
+      stdout.writeln(
+        '[Fabularium Worker][$submissionId] '
+        'Duplicate analysis completed.',
+      );
+    } catch (error) {
+      // The Pending copy is already valid and recorded in Supabase.
+      // Keep the submission reviewable even if duplicate analysis has
+      // a transient problem. Admin can run Analyze again from Moderation.
+      stderr.writeln(
+        '[Fabularium Worker][$submissionId] '
+        'Duplicate analysis warning: $error',
+      );
+    }
+
+    await CommunityPendingStorageService
+        .instance
+        .commitLocal(
+      archivePath:
+          archiveFile.path,
+    );
+
+    try {
+      final uploadDirectory =
+          archiveFile.parent;
+
+      if (await uploadDirectory.exists()) {
+        await uploadDirectory.delete(
+          recursive:
+              true,
+        );
+      }
+    } catch (error) {
+      stderr.writeln(
+        '[Fabularium Worker][$submissionId] '
+        'Could not remove local staging after success: $error',
+      );
+    }
+
+    stdout.writeln(
+      '[Fabularium Worker][$submissionId] '
+      'Pending upload verified and staging released.',
+    );
+  } catch (error, stackTrace) {
+    stderr.writeln(
+      '[Fabularium Worker][$submissionId] '
+      'Processing failed: $error',
+    );
+    stderr.writeln(
+      stackTrace,
+    );
+
+    if (pendingResult != null) {
+      try {
+        await CommunityPendingStorageService
+            .instance
+            .deleteRemote(
+          pendingResult,
+        );
+      } catch (rollbackError) {
+        stderr.writeln(
+          '[Fabularium Worker][$submissionId] '
+          'Pending rollback warning: $rollbackError',
+        );
+      }
+    }
+
+    try {
+      await gateway.failUpload(
+        submissionId:
+            submissionId,
+        message:
+            error.toString(),
+      );
+    } catch (statusError) {
+      stderr.writeln(
+        '[Fabularium Worker][$submissionId] '
+        'Could not persist failure state: $statusError',
+      );
+    }
+  } finally {
+    _activeSubmissionIds.remove(
+      submissionId,
+    );
   }
 }
 
@@ -593,6 +871,184 @@ class _SupabaseGateway {
             submissionId,
         'failure_message':
             message,
+      },
+    );
+  }
+
+  Future<List<String>>
+      listProcessableSubmissionIds() async {
+    final uri =
+        Uri.parse(
+      '${config.supabaseUrl}/rest/v1/fabularium_submissions',
+    ).replace(
+      queryParameters:
+          <String, String>{
+        'status':
+            'in.(uploaded,processing)',
+        'select':
+            'id',
+        'order':
+            'uploaded_at.asc.nullslast',
+        'limit':
+            '10',
+      },
+    );
+
+    final response =
+        await _requestJson(
+      method:
+          'GET',
+      uri:
+          uri,
+      apiKey:
+          config.secretKey,
+    );
+
+    if (response.statusCode !=
+        HttpStatus.ok) {
+      throw _WorkerException(
+        'Could not list processable submissions: ${response.body}',
+      );
+    }
+
+    final raw =
+        response.json;
+
+    if (raw is! List) {
+      return const <String>[];
+    }
+
+    return raw
+        .whereType<Map>()
+        .map(
+          (row) =>
+              row['id']
+                  ?.toString()
+                  .trim() ??
+              '',
+        )
+        .where(
+          (id) =>
+              id.isNotEmpty,
+        )
+        .toList();
+  }
+
+  Future<_WorkerSubmission?>
+      loadSubmissionForProcessing(
+    String submissionId,
+  ) async {
+    final uri =
+        Uri.parse(
+      '${config.supabaseUrl}/rest/v1/fabularium_submissions',
+    ).replace(
+      queryParameters:
+          <String, String>{
+        'id':
+            'eq.$submissionId',
+        'select':
+            'id,status,archive_file_name,archive_size',
+        'limit':
+            '1',
+      },
+    );
+
+    final response =
+        await _requestJson(
+      method:
+          'GET',
+      uri:
+          uri,
+      apiKey:
+          config.secretKey,
+    );
+
+    if (response.statusCode !=
+        HttpStatus.ok) {
+      throw _WorkerException(
+        'Could not load submission for processing: ${response.body}',
+      );
+    }
+
+    final raw =
+        response.json;
+
+    if (raw is! List ||
+        raw.isEmpty ||
+        raw.first is! Map) {
+      return null;
+    }
+
+    final row =
+        Map<String, dynamic>.from(
+      raw.first as Map,
+    );
+
+    return _WorkerSubmission(
+      status:
+          row['status']
+                  ?.toString() ??
+              '',
+      archiveFileName:
+          _nullableString(
+        row['archive_file_name'],
+      ),
+      archiveSize:
+          _readInt(
+        row['archive_size'],
+      ),
+    );
+  }
+
+  Future<void> beginProcessing({
+    required String submissionId,
+  }) async {
+    await _rpc(
+      'worker_begin_fabularium_processing',
+      <String, dynamic>{
+        'target_submission_id':
+            submissionId,
+        'worker_identifier':
+            config.workerId,
+      },
+    );
+  }
+
+  Future<void> markPendingReview({
+    required String submissionId,
+    required CommunityPendingStorageResult result,
+  }) async {
+    await _rpc(
+      'mark_fabularium_submission_pending_review',
+      <String, dynamic>{
+        'target_submission_id':
+            submissionId,
+        'telegram_channel_id':
+            result.pendingChannelId,
+        'header_message_id':
+            result.headerMessageId,
+        'file_message_ids':
+            result.fileMessageIds,
+        'manifest_message_id':
+            result.manifestMessageId,
+        'archive_sha':
+            result.archiveSha256,
+        'fingerprint':
+            result.contentFingerprint,
+        'storage_key_value':
+            result.storageKey,
+      },
+    );
+  }
+
+  Future<void> analyzeSubmission(
+    String submissionId,
+  ) async {
+    await _rpc(
+      'analyze_fabularium_submission',
+      <String, dynamic>{
+        'target_submission_id':
+            submissionId,
       },
     );
   }

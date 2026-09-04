@@ -10,6 +10,14 @@ class CommunityRepository {
   static final CommunityRepository instance =
       CommunityRepository._();
 
+  static const String _submissionSelect =
+      'id,submitted_by,name,studio,category,model_type,scale,height,'
+      'description,tags,status,duplicate_status,duplicate_of_model_id,'
+      'source_folder_name,source_size,archive_file_name,archive_size,'
+      'archive_sha256,content_fingerprint,published_model_id,'
+      'published_package_id,submitted_at,updated_at,uploaded_at,'
+      'reviewed_at,reviewed_by,review_note,published_at,upload_error';
+
   SupabaseClient get _client {
     final client =
         SupabaseService.instance.client;
@@ -130,7 +138,9 @@ class CommunityRepository {
             .from(
               'fabularium_submissions',
             )
-            .select()
+            .select(
+              _submissionSelect,
+            )
             .eq(
               'submitted_by',
               user.id,
@@ -154,7 +164,9 @@ class CommunityRepository {
             .from(
               'fabularium_submissions',
             )
-            .select()
+            .select(
+              _submissionSelect,
+            )
             .eq(
               'id',
               submissionId,
@@ -179,7 +191,9 @@ class CommunityRepository {
             .from(
               'fabularium_submissions',
             )
-            .select()
+            .select(
+              _submissionSelect,
+            )
             .inFilter(
               'status',
               <String>[

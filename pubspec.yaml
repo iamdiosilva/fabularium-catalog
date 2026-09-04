@@ -16,6 +16,7 @@ dependencies:
   file_picker: ^10.3.0
   path: ^1.9.1
   archive: ^4.0.7
+  crypto: ^3.0.6
 
   t: ^228.0.0
   tg: ^0.0.20
