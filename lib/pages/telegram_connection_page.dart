@@ -19,11 +19,6 @@ class TelegramConnectionPage
 
 class _TelegramConnectionPageState
     extends State<TelegramConnectionPage> {
-  static const Duration _watchdogDuration =
-      Duration(
-    seconds: 25,
-  );
-
   final FabulariumSessionService _session =
       FabulariumSessionService.instance;
 
@@ -45,13 +40,11 @@ class _TelegramConnectionPageState
   StreamSubscription<TelegramAuthState>?
       _subscription;
 
-  Timer? _watchdog;
+  String? _busyLabel;
 
-  bool _watchdogExpired =
-      false;
-
-  bool _resetting =
-      false;
+  bool get _isBusy =>
+      _busyLabel !=
+      null;
 
   @override
   void initState() {
@@ -59,26 +52,23 @@ class _TelegramConnectionPageState
 
     _subscription =
         _telegram.stateStream.listen(
-      (
-        _,
-      ) {
-        if (!mounted) {
-          return;
+      (_) {
+        if (mounted) {
+          setState(() {});
         }
-
-        _syncWatchdog();
-
-        setState(() {});
       },
     );
 
-    _connect();
+    unawaited(
+      _runAction(
+        'Connecting to Telegram...',
+        _telegram.connect,
+      ),
+    );
   }
 
   @override
   void dispose() {
-    _watchdog?.cancel();
-
     _subscription?.cancel();
 
     _phone.dispose();
@@ -88,106 +78,21 @@ class _TelegramConnectionPageState
     super.dispose();
   }
 
-  Future<void> _connect() async {
-    _watchdogExpired =
-        false;
-
-    _startWatchdog();
-
-    if (mounted) {
-      setState(() {});
-    }
-
-    await _telegram.connect();
-
-    _syncWatchdog();
-
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
-  void _startWatchdog() {
-    _watchdog?.cancel();
-
-    _watchdog =
-        Timer(
-      _watchdogDuration,
-      () {
-        if (!mounted ||
-            _telegram.state !=
-                TelegramAuthState.connecting) {
-          return;
-        }
-
-        setState(() {
-          _watchdogExpired =
-              true;
-        });
-      },
-    );
-  }
-
-  void _syncWatchdog() {
-    if (_telegram.state ==
-        TelegramAuthState.connecting) {
-      if (_watchdog ==
-              null ||
-          !_watchdog!.isActive) {
-        _startWatchdog();
-      }
-
-      return;
-    }
-
-    _watchdog?.cancel();
-
-    _watchdog =
-        null;
-
-    _watchdogExpired =
-        false;
-  }
-
-  Future<void> _resetTelegram() async {
-    if (_resetting) {
+  Future<void> _runAction(
+    String label,
+    Future<void> Function() action,
+  ) async {
+    if (_isBusy) {
       return;
     }
 
     setState(() {
-      _resetting =
-          true;
-
-      _watchdogExpired =
-          false;
+      _busyLabel =
+          label;
     });
 
     try {
-      await _telegram
-          .logout()
-          .timeout(
-        const Duration(
-          seconds: 8,
-        ),
-      );
-
-      await _connect();
-    } on TimeoutException {
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(
-        const SnackBar(
-          content:
-              Text(
-            'Telegram connection did not close in time. '
-            'Close Fabularium completely and open it again, then retry.',
-          ),
-        ),
-      );
+      await action();
     } catch (error) {
       if (!mounted) {
         return;
@@ -206,33 +111,55 @@ class _TelegramConnectionPageState
     } finally {
       if (mounted) {
         setState(() {
-          _resetting =
-              false;
+          _busyLabel =
+              null;
         });
       }
     }
   }
 
-  Future<void> _useAnotherAccount() async {
-    try {
-      await _session
-          .useAnotherFabulariumAccount();
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
+  Future<void> _sendCode() {
+    return _runAction(
+      'Sending verification code...',
+      () =>
+          _telegram.sendCode(
+        _phone.text,
+      ),
+    );
+  }
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(
-        SnackBar(
-          content:
-              Text(
-            error.toString(),
-          ),
-        ),
-      );
-    }
+  Future<void> _signIn() {
+    return _runAction(
+      'Verifying code...',
+      () =>
+          _telegram.signIn(
+        _code.text,
+      ),
+    );
+  }
+
+  Future<void> _checkPassword() {
+    return _runAction(
+      'Checking two-step password...',
+      () =>
+          _telegram.checkPassword(
+        _password.text,
+      ),
+    );
+  }
+
+  Future<void> _retryConnection() {
+    return _runAction(
+      'Reconnecting to Telegram...',
+      _telegram.connect,
+    );
+  }
+
+  Future<void> _useAnotherAccount() {
+    return _runAction(
+      'Signing out...',
+      _session.useAnotherFabulariumAccount,
+    );
   }
 
   @override
@@ -353,13 +280,51 @@ class _TelegramConnectionPageState
                               26,
                         ),
                         _buildState(),
+                        if (_busyLabel !=
+                            null) ...<Widget>[
+                          const SizedBox(
+                            height:
+                                16,
+                          ),
+                          Row(
+                            mainAxisAlignment:
+                                MainAxisAlignment.center,
+                            children:
+                                <Widget>[
+                              const SizedBox(
+                                width:
+                                    18,
+                                height:
+                                    18,
+                                child:
+                                    CircularProgressIndicator(
+                                  strokeWidth:
+                                      2,
+                                ),
+                              ),
+                              const SizedBox(
+                                width:
+                                    10,
+                              ),
+                              Flexible(
+                                child:
+                                    Text(
+                                  _busyLabel!,
+                                  textAlign:
+                                      TextAlign.center,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                         const SizedBox(
                           height:
                               14,
                         ),
                         TextButton.icon(
                           onPressed:
-                              _session.isSigningOut
+                              _isBusy ||
+                                      _session.isSigningOut
                                   ? null
                                   : _useAnotherAccount,
                           icon:
@@ -384,105 +349,11 @@ class _TelegramConnectionPageState
   }
 
   Widget _buildState() {
-    if (_watchdogExpired &&
-        _telegram.state ==
-            TelegramAuthState.connecting) {
-      return Column(
-        crossAxisAlignment:
-            CrossAxisAlignment.stretch,
-        children:
-            <Widget>[
-          Icon(
-            Icons.cloud_off_outlined,
-            size:
-                42,
-            color:
-                Theme.of(
-              context,
-            )
-                    .colorScheme
-                    .error,
-          ),
-          const SizedBox(
-            height:
-                12,
-          ),
-          Text(
-            'Telegram connection is taking longer than expected.',
-            textAlign:
-                TextAlign.center,
-            style:
-                TextStyle(
-              color:
-                  Theme.of(
-                context,
-              )
-                      .colorScheme
-                      .error,
-            ),
-          ),
-          const SizedBox(
-            height:
-                8,
-          ),
-          const Text(
-            'Reset the Telegram session and start a clean login.',
-            textAlign:
-                TextAlign.center,
-          ),
-          const SizedBox(
-            height:
-                18,
-          ),
-          FilledButton.tonalIcon(
-            onPressed:
-                _resetting
-                    ? null
-                    : _resetTelegram,
-            icon:
-                _resetting
-                    ? const SizedBox(
-                        width:
-                            18,
-                        height:
-                            18,
-                        child:
-                            CircularProgressIndicator(
-                          strokeWidth:
-                              2,
-                        ),
-                      )
-                    : const Icon(
-                        Icons.restart_alt,
-                      ),
-            label:
-                const Text(
-              'Reset Telegram Session',
-            ),
-          ),
-        ],
-      );
-    }
-
     switch (_telegram.state) {
       case TelegramAuthState.connecting:
-        return const Center(
-          child:
-              Column(
-            mainAxisSize:
-                MainAxisSize.min,
-            children:
-                <Widget>[
-              CircularProgressIndicator(),
-              SizedBox(
-                height:
-                    12,
-              ),
-              Text(
-                'Connecting to Telegram...',
-              ),
-            ],
-          ),
+        return const _CenteredProgress(
+          label:
+              'Connecting to Telegram...',
         );
 
       case TelegramAuthState.phoneRequired:
@@ -493,14 +364,13 @@ class _TelegramConnectionPageState
           controller:
               _phone,
           button:
-              'Send Verification Code',
+              _isBusy
+                  ? 'Sending...'
+                  : 'Send Verification Code',
           icon:
               Icons.phone_outlined,
           onSubmit:
-              () =>
-                  _telegram.sendCode(
-            _phone.text,
-          ),
+              _sendCode,
         );
 
       case TelegramAuthState.codeRequired:
@@ -510,14 +380,13 @@ class _TelegramConnectionPageState
           controller:
               _code,
           button:
-              'Continue',
+              _isBusy
+                  ? 'Verifying...'
+                  : 'Continue',
           icon:
               Icons.password_outlined,
           onSubmit:
-              () =>
-                  _telegram.signIn(
-            _code.text,
-          ),
+              _signIn,
         );
 
       case TelegramAuthState.passwordRequired:
@@ -527,16 +396,15 @@ class _TelegramConnectionPageState
           controller:
               _password,
           button:
-              'Continue',
+              _isBusy
+                  ? 'Checking...'
+                  : 'Continue',
           icon:
               Icons.lock_outline,
           obscure:
               true,
           onSubmit:
-              () =>
-                  _telegram.checkPassword(
-            _password.text,
-          ),
+              _checkPassword,
         );
 
       case TelegramAuthState.authenticated:
@@ -569,6 +437,21 @@ class _TelegramConnectionPageState
               CrossAxisAlignment.stretch,
           children:
               <Widget>[
+            Icon(
+              Icons.error_outline,
+              size:
+                  42,
+              color:
+                  Theme.of(
+                context,
+              )
+                      .colorScheme
+                      .error,
+            ),
+            const SizedBox(
+              height:
+                  12,
+            ),
             Text(
               _telegram.errorMessage ??
                   'Telegram connection error.',
@@ -590,32 +473,30 @@ class _TelegramConnectionPageState
             ),
             FilledButton.tonalIcon(
               onPressed:
-                  _connect,
-              icon:
-                  const Icon(
-                Icons.refresh,
-              ),
-              label:
-                  const Text(
-                'Try Again',
-              ),
-            ),
-            const SizedBox(
-              height:
-                  8,
-            ),
-            TextButton.icon(
-              onPressed:
-                  _resetting
+                  _isBusy
                       ? null
-                      : _resetTelegram,
+                      : _retryConnection,
               icon:
-                  const Icon(
-                Icons.restart_alt,
-              ),
+                  _isBusy
+                      ? const SizedBox(
+                          width:
+                              18,
+                          height:
+                              18,
+                          child:
+                              CircularProgressIndicator(
+                            strokeWidth:
+                                2,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.refresh,
+                        ),
               label:
-                  const Text(
-                'Reset Telegram Session',
+                  Text(
+                _isBusy
+                    ? 'Reconnecting...'
+                    : 'Try Again',
               ),
             ),
           ],
@@ -639,11 +520,16 @@ class _TelegramConnectionPageState
         TextField(
           controller:
               controller,
+          enabled:
+              !_isBusy,
           obscureText:
               obscure,
           onSubmitted:
-              (_) =>
-                  onSubmit(),
+              (_) {
+            if (!_isBusy) {
+              onSubmit();
+            }
+          },
           decoration:
               InputDecoration(
             labelText:
@@ -660,15 +546,66 @@ class _TelegramConnectionPageState
           height:
               16,
         ),
-        FilledButton(
+        FilledButton.icon(
           onPressed:
-              onSubmit,
-          child:
+              _isBusy
+                  ? null
+                  : onSubmit,
+          icon:
+              _isBusy
+                  ? const SizedBox(
+                      width:
+                          18,
+                      height:
+                          18,
+                      child:
+                          CircularProgressIndicator(
+                        strokeWidth:
+                            2,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.arrow_forward,
+                    ),
+          label:
               Text(
             button,
           ),
         ),
       ],
+    );
+  }
+}
+
+class _CenteredProgress
+    extends StatelessWidget {
+  final String label;
+
+  const _CenteredProgress({
+    required this.label,
+  });
+
+  @override
+  Widget build(
+    BuildContext context,
+  ) {
+    return Center(
+      child:
+          Column(
+        mainAxisSize:
+            MainAxisSize.min,
+        children:
+            <Widget>[
+          const CircularProgressIndicator(),
+          const SizedBox(
+            height:
+                12,
+          ),
+          Text(
+            label,
+          ),
+        ],
+      ),
     );
   }
 }

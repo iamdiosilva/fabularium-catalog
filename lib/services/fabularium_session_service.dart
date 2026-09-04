@@ -118,14 +118,8 @@ class FabulariumSessionService
       _onFabulariumAuthChanged,
     );
 
-    // Every desktop process starts at the Fabularium step.
-    //
-    // If Supabase restored a valid session, the login page will offer
-    // "Continue" instead of making the user type credentials again.
-    //
-    // IMPORTANT: we deliberately do NOT connect Telegram here. Telegram
-    // networking starts only after the Telegram page is visible, matching
-    // the old flow that was already validated.
+    // Always expose Fabularium as Step 1 for a new desktop process.
+    // A restored Supabase session can be confirmed with "Continue".
     _fabulariumConfirmedForRun =
         false;
 
@@ -149,47 +143,8 @@ class FabulariumSessionService
     notifyListeners();
   }
 
-  Future<void> useAnotherFabulariumAccount() async {
-    _fabulariumConfirmedForRun =
-        false;
-
-    Object? firstError;
-
-    try {
-      try {
-        await _downloads
-            .resetForSessionEnd();
-      } catch (error) {
-        firstError ??=
-            error;
-      }
-
-      try {
-        await _telegram.logout();
-      } catch (error) {
-        firstError ??=
-            error;
-      }
-
-      try {
-        await _auth.signOut();
-      } catch (error) {
-        firstError ??=
-            error;
-      }
-    } finally {
-      _error =
-          firstError;
-
-      notifyListeners();
-    }
-
-    if (firstError != null) {
-      throw FabulariumSessionException(
-        'Could not completely change account: '
-        '$firstError',
-      );
-    }
+  Future<void> useAnotherFabulariumAccount() {
+    return signOutAll();
   }
 
   Future<void> signOutAll() async {
@@ -242,7 +197,8 @@ class FabulariumSessionService
       notifyListeners();
     }
 
-    if (firstError != null) {
+    if (firstError !=
+        null) {
       throw FabulariumSessionException(
         'The session was closed with an error: '
         '$firstError',
