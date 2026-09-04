@@ -1,10 +1,12 @@
 import 'dart:async' show Timer;
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:path/path.dart' as p;
 
 import 'package:catalago_fabularium/services/community_pending_storage_service.dart';
+import 'package:catalago_fabularium/services/community_official_publish_service.dart';
 
 Future<void> main(
   List<String> args,
@@ -31,7 +33,7 @@ Future<void> main(
   );
 
   stdout.writeln(
-    '[Fabularium Worker] Community V3.2 Pending processor enabled.',
+    '[Fabularium Worker] Community V3.3 Pending + Official publication processor enabled.',
   );
 
   unawaited(
@@ -482,13 +484,37 @@ Future<void> _processAvailableJobs(
       config,
     );
 
-    final ids =
+    final uploadIds =
         await gateway
             .listProcessableSubmissionIds();
 
     for (final id
-        in ids) {
+        in uploadIds) {
       await _processSubmission(
+        config,
+        id,
+      );
+    }
+
+    final publicationIds =
+        await gateway
+            .listPublicationSubmissionIds();
+
+    for (final id
+        in publicationIds) {
+      await _publishSubmission(
+        config,
+        id,
+      );
+    }
+
+    final cleanupIds =
+        await gateway
+            .listPendingCleanupSubmissionIds();
+
+    for (final id
+        in cleanupIds) {
+      await _cleanupPendingSubmission(
         config,
         id,
       );
@@ -624,9 +650,6 @@ Future<void> _processSubmission(
         'Duplicate analysis completed.',
       );
     } catch (error) {
-      // The Pending copy is already valid and recorded in Supabase.
-      // Keep the submission reviewable even if duplicate analysis has
-      // a transient problem. Admin can run Analyze again from Moderation.
       stderr.writeln(
         '[Fabularium Worker][$submissionId] '
         'Duplicate analysis warning: $error',
@@ -703,6 +726,265 @@ Future<void> _processSubmission(
       submissionId,
     );
   }
+}
+
+
+Future<void> _publishSubmission(
+  _WorkerConfig config,
+  String submissionId,
+) async {
+  if (!_activeSubmissionIds.add(
+    submissionId,
+  )) {
+    return;
+  }
+
+  final gateway =
+      _SupabaseGateway(
+    config,
+  );
+
+  try {
+    final submission =
+        await gateway
+            .loadPublicationSubmission(
+      submissionId,
+    );
+
+    if (submission == null) {
+      return;
+    }
+
+    if (submission.status !=
+            'approved' &&
+        submission.status !=
+            'publishing') {
+      return;
+    }
+
+    if (submission.status ==
+            'approved' &&
+        submission.publicationError !=
+            null) {
+      return;
+    }
+
+    if (submission.storageKey == null ||
+        submission.storageKey!.isEmpty ||
+        submission.pendingChannelId <= 0 ||
+        submission.pendingFileMessageIds.isEmpty ||
+        submission.pendingManifestMessageId <= 0) {
+      throw const _WorkerException(
+        'Approved submission is missing Pending Telegram metadata.',
+      );
+    }
+
+    stdout.writeln(
+      '[Fabularium Worker][$submissionId] '
+      'Official publication started.',
+    );
+
+    await gateway.beginPublication(
+      submissionId:
+          submissionId,
+    );
+
+    final official =
+        await CommunityOfficialPublishService
+            .instance
+            .publish(
+      storageKey:
+          submission.storageKey!,
+      pendingChannelId:
+          submission.pendingChannelId,
+      pendingFileMessageIds:
+          submission.pendingFileMessageIds,
+      pendingManifestMessageId:
+          submission.pendingManifestMessageId,
+      onProgress:
+          (stage) {
+        stdout.writeln(
+          '[Fabularium Worker][$submissionId] $stage',
+        );
+      },
+    );
+
+    final modelId =
+        'm_${_opaqueId()}';
+
+    final packageId =
+        'p_${_opaqueId()}';
+
+    await gateway.finalizePublication(
+      submission:
+          submission,
+      modelId:
+          modelId,
+      packageId:
+          packageId,
+      archiveFileName:
+          '${submission.storageKey}.${official.archiveExtension}',
+      result:
+          official,
+    );
+
+    stdout.writeln(
+      '[Fabularium Worker][$submissionId] '
+      'Official publication verified and committed.',
+    );
+
+    try {
+      await _deletePending(
+        gateway:
+            gateway,
+        submission:
+            submission,
+      );
+
+      stdout.writeln(
+        '[Fabularium Worker][$submissionId] '
+        'Pending storage removed after publication.',
+      );
+    } catch (cleanupError) {
+      stderr.writeln(
+        '[Fabularium Worker][$submissionId] '
+        'Pending cleanup warning: $cleanupError',
+      );
+    }
+  } catch (error, stackTrace) {
+    stderr.writeln(
+      '[Fabularium Worker][$submissionId] '
+      'Official publication failed: $error',
+    );
+    stderr.writeln(
+      stackTrace,
+    );
+
+    try {
+      await gateway.failPublication(
+        submissionId:
+            submissionId,
+        message:
+            error.toString(),
+      );
+    } catch (_) {}
+  } finally {
+    _activeSubmissionIds.remove(
+      submissionId,
+    );
+  }
+}
+
+Future<void> _cleanupPendingSubmission(
+  _WorkerConfig config,
+  String submissionId,
+) async {
+  if (!_activeSubmissionIds.add(
+    submissionId,
+  )) {
+    return;
+  }
+
+  final gateway =
+      _SupabaseGateway(
+    config,
+  );
+
+  try {
+    final submission =
+        await gateway
+            .loadPublicationSubmission(
+      submissionId,
+    );
+
+    if (submission == null ||
+        submission.pendingChannelId <=
+            0) {
+      return;
+    }
+
+    await _deletePending(
+      gateway:
+          gateway,
+      submission:
+          submission,
+    );
+
+    stdout.writeln(
+      '[Fabularium Worker][$submissionId] '
+      'Pending cleanup completed for ${submission.status}.',
+    );
+  } catch (error) {
+    stderr.writeln(
+      '[Fabularium Worker][$submissionId] '
+      'Pending cleanup failed: $error',
+    );
+  } finally {
+    _activeSubmissionIds.remove(
+      submissionId,
+    );
+  }
+}
+
+Future<void> _deletePending({
+  required _SupabaseGateway gateway,
+  required _PublicationSubmission submission,
+}) async {
+  final ids =
+      <int>{
+    if (submission.pendingHeaderMessageId >
+        0)
+      submission.pendingHeaderMessageId,
+    ...submission.pendingFileMessageIds,
+    if (submission.pendingManifestMessageId >
+        0)
+      submission.pendingManifestMessageId,
+  }.where(
+    (id) =>
+        id > 0,
+  ).toList()
+    ..sort();
+
+  if (ids.isNotEmpty) {
+    await CommunityOfficialPublishService
+        .instance
+        .deletePending(
+      pendingChannelId:
+          submission.pendingChannelId,
+      messageIds:
+          ids,
+    );
+  }
+
+  await gateway.clearPending(
+    submissionId:
+        submission.id,
+  );
+}
+
+String _opaqueId() {
+  final random =
+      Random.secure();
+
+  return List<int>.generate(
+    16,
+    (_) =>
+        random.nextInt(
+      256,
+    ),
+  )
+      .map(
+        (value) =>
+            value
+                .toRadixString(
+                  16,
+                )
+                .padLeft(
+                  2,
+                  '0',
+                ),
+      )
+      .join();
 }
 
 class _SupabaseGateway {
@@ -1053,6 +1335,332 @@ class _SupabaseGateway {
     );
   }
 
+
+  Future<List<String>>
+      listPublicationSubmissionIds() async {
+    final uri =
+        Uri.parse(
+      '${config.supabaseUrl}/rest/v1/fabularium_submissions',
+    ).replace(
+      queryParameters:
+          <String, String>{
+        'status':
+            'in.(approved,publishing)',
+        'publication_error':
+            'is.null',
+        'select':
+            'id',
+        'order':
+            'reviewed_at.asc.nullslast',
+        'limit':
+            '10',
+      },
+    );
+
+    final response =
+        await _requestJson(
+      method:
+          'GET',
+      uri:
+          uri,
+      apiKey:
+          config.secretKey,
+    );
+
+    if (response.statusCode !=
+        HttpStatus.ok) {
+      throw _WorkerException(
+        'Could not list publication submissions: ${response.body}',
+      );
+    }
+
+    return _readIdList(
+      response.json,
+    );
+  }
+
+  Future<List<String>>
+      listPendingCleanupSubmissionIds() async {
+    final uri =
+        Uri.parse(
+      '${config.supabaseUrl}/rest/v1/fabularium_submissions',
+    ).replace(
+      queryParameters:
+          <String, String>{
+        'status':
+            'in.(published,rejected)',
+        'pending_channel_id':
+            'not.is.null',
+        'select':
+            'id',
+        'order':
+            'updated_at.asc',
+        'limit':
+            '20',
+      },
+    );
+
+    final response =
+        await _requestJson(
+      method:
+          'GET',
+      uri:
+          uri,
+      apiKey:
+          config.secretKey,
+    );
+
+    if (response.statusCode !=
+        HttpStatus.ok) {
+      throw _WorkerException(
+        'Could not list Pending cleanup submissions: ${response.body}',
+      );
+    }
+
+    return _readIdList(
+      response.json,
+    );
+  }
+
+  List<String> _readIdList(
+    dynamic raw,
+  ) {
+    if (raw is! List) {
+      return const <String>[];
+    }
+
+    return raw
+        .whereType<Map>()
+        .map(
+          (row) =>
+              row['id']
+                  ?.toString()
+                  .trim() ??
+              '',
+        )
+        .where(
+          (id) =>
+              id.isNotEmpty,
+        )
+        .toList();
+  }
+
+  Future<_PublicationSubmission?>
+      loadPublicationSubmission(
+    String submissionId,
+  ) async {
+    final uri =
+        Uri.parse(
+      '${config.supabaseUrl}/rest/v1/fabularium_submissions',
+    ).replace(
+      queryParameters:
+          <String, String>{
+        'id':
+            'eq.$submissionId',
+        'select':
+            'id,status,storage_key,pending_channel_id,'
+            'pending_header_message_id,pending_file_message_ids,'
+            'pending_manifest_message_id,publication_error',
+        'limit':
+            '1',
+      },
+    );
+
+    final response =
+        await _requestJson(
+      method:
+          'GET',
+      uri:
+          uri,
+      apiKey:
+          config.secretKey,
+    );
+
+    if (response.statusCode !=
+        HttpStatus.ok) {
+      throw _WorkerException(
+        'Could not load publication submission: ${response.body}',
+      );
+    }
+
+    final raw =
+        response.json;
+
+    if (raw is! List ||
+        raw.isEmpty ||
+        raw.first is! Map) {
+      return null;
+    }
+
+    final row =
+        Map<String, dynamic>.from(
+      raw.first as Map,
+    );
+
+    final messageIds =
+        <int>[];
+
+    final rawIds =
+        row['pending_file_message_ids'];
+
+    if (rawIds is List) {
+      for (final value
+          in rawIds) {
+        final id =
+            _readInt(
+          value,
+        );
+
+        if (id > 0) {
+          messageIds.add(
+            id,
+          );
+        }
+      }
+    }
+
+    final storageKey =
+        _nullableString(
+      row['storage_key'],
+    );
+
+    return _PublicationSubmission(
+      id:
+          row['id']?.toString() ?? '',
+      status:
+          row['status']?.toString() ?? '',
+      storageKey:
+          storageKey,
+      pendingChannelId:
+          _readInt(
+        row['pending_channel_id'],
+      ),
+      pendingHeaderMessageId:
+          _readInt(
+        row['pending_header_message_id'],
+      ),
+      pendingFileMessageIds:
+          messageIds,
+      pendingManifestMessageId:
+          _readInt(
+        row['pending_manifest_message_id'],
+      ),
+      publicationError:
+          _nullableString(
+        row['publication_error'],
+      ),
+    );
+  }
+
+  Future<void> beginPublication({
+    required String submissionId,
+  }) async {
+    await _rpc(
+      'worker_begin_fabularium_publication',
+      <String, dynamic>{
+        'target_submission_id':
+            submissionId,
+        'worker_identifier':
+            config.workerId,
+      },
+    );
+  }
+
+  Future<void> failPublication({
+    required String submissionId,
+    required String message,
+  }) async {
+    await _rpc(
+      'worker_fail_fabularium_publication',
+      <String, dynamic>{
+        'target_submission_id':
+            submissionId,
+        'failure_message':
+            message,
+      },
+    );
+  }
+
+  Future<void> finalizePublication({
+    required _PublicationSubmission submission,
+    required String modelId,
+    required String packageId,
+    required String archiveFileName,
+    required CommunityOfficialPublishResult result,
+  }) async {
+    await _rpc(
+      'worker_finalize_fabularium_publication',
+      <String, dynamic>{
+        'payload':
+            <String, dynamic>{
+          'submissionId':
+              submission.id,
+          'modelId':
+              modelId,
+          'packageId':
+              packageId,
+          'archiveFileName':
+              archiveFileName,
+          'telegram':
+              <String, dynamic>{
+            'catalog':
+                <String, dynamic>{
+              'channelId':
+                  result.catalogChannelId,
+              'accessHash':
+                  result.catalogAccessHash,
+              'channelTitle':
+                  result.catalogChannelTitle,
+              'anchorMessageId':
+                  result.catalogAnchorMessageId,
+            },
+            'files':
+                <String, dynamic>{
+              'channelId':
+                  result.filesChannelId,
+              'accessHash':
+                  result.filesAccessHash,
+              'channelTitle':
+                  result.filesChannelTitle,
+              'headerMessageId':
+                  result.filesHeaderMessageId,
+              'manifestMessageId':
+                  result.filesManifestMessageId,
+            },
+          },
+          'fileGroups':
+              result.fileGroups
+                  .map(
+                    (group) =>
+                        group.toPayload(),
+                  )
+                  .toList(),
+          'parts':
+              result.parts
+                  .map(
+                    (part) =>
+                        part.toPayload(),
+                  )
+                  .toList(),
+          'manifest':
+              result.manifest,
+        },
+      },
+    );
+  }
+
+  Future<void> clearPending({
+    required String submissionId,
+  }) async {
+    await _rpc(
+      'worker_clear_fabularium_pending',
+      <String, dynamic>{
+        'target_submission_id':
+            submissionId,
+      },
+    );
+  }
+
   Future<void> _rpc(
     String name,
     Map<String, dynamic> payload,
@@ -1382,7 +1990,6 @@ class _WorkerConfig {
       'SUPABASE_SECRET_KEY',
     );
 
-    // Backward compatibility with the legacy JWT-based service_role key.
     if (secretKey.isEmpty) {
       secretKey =
           readString(
@@ -1491,6 +2098,29 @@ class _WorkerSubmission {
     required this.status,
     required this.archiveFileName,
     required this.archiveSize,
+  });
+}
+
+
+class _PublicationSubmission {
+  final String id;
+  final String status;
+  final String? storageKey;
+  final int pendingChannelId;
+  final int pendingHeaderMessageId;
+  final List<int> pendingFileMessageIds;
+  final int pendingManifestMessageId;
+  final String? publicationError;
+
+  const _PublicationSubmission({
+    required this.id,
+    required this.status,
+    required this.storageKey,
+    required this.pendingChannelId,
+    required this.pendingHeaderMessageId,
+    required this.pendingFileMessageIds,
+    required this.pendingManifestMessageId,
+    required this.publicationError,
   });
 }
 
