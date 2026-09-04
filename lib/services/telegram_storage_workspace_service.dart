@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:path/path.dart' as p;
 
@@ -16,26 +17,8 @@ class TelegramStorageWorkspaceService {
   final TelegramStorageService _storage =
       TelegramStorageService.instance;
 
-  static const String defaultCatalogChannelTitle =
-      'Fabularium Catalog';
-
-  static const String defaultFilesChannelTitle =
-      'Fabularium Files';
-
-  static const String defaultCatalogChannelAbout =
-      'Private visual catalog used by Fabularium. '
-      'Contains model previews and catalog metadata.';
-
-  static const String defaultFilesChannelAbout =
-      'Private file storage used by Fabularium. '
-      'Contains model archives, package parts and manifests.';
-
   static const String _fileName =
       'storage_workspace.json';
-
-  // ============================================================
-  // PATH
-  // ============================================================
 
   String _filePath() {
     final localAppData =
@@ -56,20 +39,14 @@ class TelegramStorageWorkspaceService {
     );
   }
 
-  // ============================================================
-  // LOAD
-  // ============================================================
-
   Future<TelegramStorageWorkspace> load() async {
-    final file =
-        File(
+    final file = File(
       _filePath(),
     );
 
     try {
       if (await file.exists()) {
-        final decoded =
-            jsonDecode(
+        final decoded = jsonDecode(
           await file.readAsString(),
         );
 
@@ -79,7 +56,11 @@ class TelegramStorageWorkspaceService {
             decoded,
           );
 
-          if (root['version'] == 1 &&
+          final version =
+              _readInt(root['version']);
+
+          if ((version == 1 ||
+                  version == 2) &&
               root['workspace'] is Map) {
             return TelegramStorageWorkspace.fromJson(
               Map<String, dynamic>.from(
@@ -91,14 +72,8 @@ class TelegramStorageWorkspaceService {
       }
     } catch (_) {}
 
-    /*
-     * Migração do Storage antigo.
-     *
-     * O canal que já estava configurado
-     * passa a ser inicialmente o Files Channel.
-     *
-     * Nada é perdido.
-     */
+    // Legacy Telegram Storage migration.
+    // The old single storage channel becomes the Files Channel.
     final legacyChannel =
         await _storage.loadChannel();
 
@@ -107,6 +82,7 @@ class TelegramStorageWorkspaceService {
           TelegramStorageWorkspace(
         catalogChannel: null,
         filesChannel: legacyChannel,
+        pendingChannel: null,
       );
 
       await save(
@@ -119,22 +95,23 @@ class TelegramStorageWorkspaceService {
     return const TelegramStorageWorkspace.empty();
   }
 
-  // ============================================================
-  // SAVE
-  // ============================================================
-
   Future<void> save(
     TelegramStorageWorkspace workspace,
   ) async {
     if (workspace.usesSameChannel) {
       throw const TelegramStorageWorkspaceException(
-        'Catalog Channel and Files Channel '
-        'must be different Telegram channels.',
+        'Catalog, Files and Pending must be different Telegram channels.',
       );
     }
 
-    final file =
-        File(
+    if (workspace.pendingChannel?.isPublic ==
+        true) {
+      throw const TelegramStorageWorkspaceException(
+        'Pending Channel must remain private.',
+      );
+    }
+
+    final file = File(
       _filePath(),
     );
 
@@ -142,8 +119,7 @@ class TelegramStorageWorkspaceService {
       recursive: true,
     );
 
-    final temp =
-        File(
+    final temp = File(
       '${file.path}.tmp',
     );
 
@@ -155,7 +131,7 @@ class TelegramStorageWorkspaceService {
     await temp.writeAsString(
       encoder.convert(
         <String, dynamic>{
-          'version': 1,
+          'version': 2,
           'kind':
               'fabularium-storage-workspace',
           'workspace':
@@ -174,25 +150,9 @@ class TelegramStorageWorkspaceService {
     );
   }
 
-  // ============================================================
-  // LEGACY FILES CHANNEL COMPATIBILITY
-  // ============================================================
-
   Future<void> _syncLegacyFilesChannel(
     TelegramStorageChannel? filesChannel,
   ) async {
-    /*
-     * storage_channel.json pertence ao Storage V1/V2.
-     *
-     * Enquanto ainda existirem pontos antigos do app que
-     * consultem esse arquivo, ele deve representar SOMENTE
-     * o Files Channel.
-     *
-     * createStorageChannel() salva automaticamente o canal
-     * criado nesse arquivo. Isso significa que criar o
-     * Catalog Channel poderia fazer o legado apontar para o
-     * canal errado se não corrigíssemos aqui.
-     */
     if (filesChannel == null) {
       await _storage.clearChannel();
       return;
@@ -203,32 +163,23 @@ class TelegramStorageWorkspaceService {
     );
   }
 
-  // ============================================================
-  // AVAILABLE CHANNELS
-  // ============================================================
-
   Future<List<TelegramStorageChannel>>
       listAvailableChannels() {
     return _storage.listAvailableChannels();
   }
 
-  // ============================================================
-  // SELECT CATALOG
-  // ============================================================
-
-  Future<TelegramStorageWorkspace> selectCatalogChannel(
+  Future<TelegramStorageWorkspace>
+      selectCatalogChannel(
     TelegramStorageChannel channel,
   ) async {
     final current =
         await load();
 
-    if (current.filesChannel?.id ==
-        channel.id) {
-      throw const TelegramStorageWorkspaceException(
-        'The Catalog Channel cannot be '
-        'the same as the Files Channel.',
-      );
-    }
+    _ensureNotUsedByAnotherRole(
+      current: current,
+      selected: channel,
+      role: _WorkspaceChannelRole.catalog,
+    );
 
     final updated =
         current.copyWith(
@@ -246,23 +197,18 @@ class TelegramStorageWorkspaceService {
     return updated;
   }
 
-  // ============================================================
-  // SELECT FILES
-  // ============================================================
-
-  Future<TelegramStorageWorkspace> selectFilesChannel(
+  Future<TelegramStorageWorkspace>
+      selectFilesChannel(
     TelegramStorageChannel channel,
   ) async {
     final current =
         await load();
 
-    if (current.catalogChannel?.id ==
-        channel.id) {
-      throw const TelegramStorageWorkspaceException(
-        'The Files Channel cannot be '
-        'the same as the Catalog Channel.',
-      );
-    }
+    _ensureNotUsedByAnotherRole(
+      current: current,
+      selected: channel,
+      role: _WorkspaceChannelRole.files,
+    );
 
     final updated =
         current.copyWith(
@@ -280,18 +226,48 @@ class TelegramStorageWorkspaceService {
     return updated;
   }
 
-  // ============================================================
-  // CREATE CATALOG CHANNEL
-  // ============================================================
+  Future<TelegramStorageWorkspace>
+      selectPendingChannel(
+    TelegramStorageChannel channel,
+  ) async {
+    if (channel.isPublic) {
+      throw const TelegramStorageWorkspaceException(
+        'Pending Channel must be private. Remove its public username before selecting it.',
+      );
+    }
+
+    final current =
+        await load();
+
+    _ensureNotUsedByAnotherRole(
+      current: current,
+      selected: channel,
+      role: _WorkspaceChannelRole.pending,
+    );
+
+    final updated =
+        current.copyWith(
+      pendingChannel: channel,
+    );
+
+    await save(
+      updated,
+    );
+
+    await _syncLegacyFilesChannel(
+      updated.filesChannel,
+    );
+
+    return updated;
+  }
 
   Future<TelegramStorageWorkspace>
       createCatalogChannel() async {
     final channel =
         await _storage.createStorageChannel(
       title:
-          defaultCatalogChannelTitle,
-      about:
-          defaultCatalogChannelAbout,
+          _generateOpaqueChannelTitle(),
+      about: '',
     );
 
     return selectCatalogChannel(
@@ -299,18 +275,13 @@ class TelegramStorageWorkspaceService {
     );
   }
 
-  // ============================================================
-  // CREATE FILES CHANNEL
-  // ============================================================
-
   Future<TelegramStorageWorkspace>
       createFilesChannel() async {
     final channel =
         await _storage.createStorageChannel(
       title:
-          defaultFilesChannelTitle,
-      about:
-          defaultFilesChannelAbout,
+          _generateOpaqueChannelTitle(),
+      about: '',
     );
 
     return selectFilesChannel(
@@ -318,9 +289,25 @@ class TelegramStorageWorkspaceService {
     );
   }
 
-  // ============================================================
-  // CLEAR CATALOG
-  // ============================================================
+  Future<TelegramStorageWorkspace>
+      createPendingChannel() async {
+    final channel =
+        await _storage.createStorageChannel(
+      title:
+          _generateOpaqueChannelTitle(),
+      about: '',
+    );
+
+    if (channel.isPublic) {
+      throw const TelegramStorageWorkspaceException(
+        'The newly created Pending Channel unexpectedly has a public username.',
+      );
+    }
+
+    return selectPendingChannel(
+      channel,
+    );
+  }
 
   Future<TelegramStorageWorkspace>
       clearCatalogChannel() async {
@@ -343,10 +330,6 @@ class TelegramStorageWorkspaceService {
     return updated;
   }
 
-  // ============================================================
-  // CLEAR FILES
-  // ============================================================
-
   Future<TelegramStorageWorkspace>
       clearFilesChannel() async {
     final current =
@@ -368,18 +351,33 @@ class TelegramStorageWorkspaceService {
     return updated;
   }
 
-  // ============================================================
-  // CLEAR ALL
-  // ============================================================
+  Future<TelegramStorageWorkspace>
+      clearPendingChannel() async {
+    final current =
+        await load();
+
+    final updated =
+        current.copyWith(
+      clearPendingChannel: true,
+    );
+
+    await save(
+      updated,
+    );
+
+    await _syncLegacyFilesChannel(
+      updated.filesChannel,
+    );
+
+    return updated;
+  }
 
   Future<void> clear() async {
-    final file =
-        File(
+    final file = File(
       _filePath(),
     );
 
-    final temp =
-        File(
+    final temp = File(
       '${file.path}.tmp',
     );
 
@@ -396,6 +394,80 @@ class TelegramStorageWorkspaceService {
 
     await _storage.clearChannel();
   }
+
+  void _ensureNotUsedByAnotherRole({
+    required TelegramStorageWorkspace current,
+    required TelegramStorageChannel selected,
+    required _WorkspaceChannelRole role,
+  }) {
+    final otherChannels =
+        <TelegramStorageChannel?>[
+      if (role != _WorkspaceChannelRole.catalog)
+        current.catalogChannel,
+      if (role != _WorkspaceChannelRole.files)
+        current.filesChannel,
+      if (role != _WorkspaceChannelRole.pending)
+        current.pendingChannel,
+    ];
+
+    if (otherChannels.any(
+      (channel) =>
+          channel?.id == selected.id,
+    )) {
+      throw const TelegramStorageWorkspaceException(
+        'Each Telegram workspace role must use a different channel.',
+      );
+    }
+  }
+
+  String _generateOpaqueChannelTitle() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(
+      16,
+      (_) => random.nextInt(256),
+    );
+
+    // UUID v4 variant bits.
+    bytes[6] =
+        (bytes[6] & 0x0f) | 0x40;
+    bytes[8] =
+        (bytes[8] & 0x3f) | 0x80;
+
+    final hex = bytes
+        .map(
+          (value) => value
+              .toRadixString(16)
+              .padLeft(2, '0'),
+        )
+        .join();
+
+    return '${hex.substring(0, 8)}-'
+        '${hex.substring(8, 12)}-'
+        '${hex.substring(12, 16)}-'
+        '${hex.substring(16, 20)}-'
+        '${hex.substring(20)}';
+  }
+}
+
+enum _WorkspaceChannelRole {
+  catalog,
+  files,
+  pending,
+}
+
+int _readInt(dynamic value) {
+  if (value is int) {
+    return value;
+  }
+
+  if (value is num) {
+    return value.toInt();
+  }
+
+  return int.tryParse(
+        value?.toString() ?? '',
+      ) ??
+      0;
 }
 
 class TelegramStorageWorkspaceException
