@@ -22,9 +22,6 @@ class FabulariumSessionService
   static final FabulariumSessionService instance =
       FabulariumSessionService._();
 
-  // V3.4.1 treats Telegram as part of the complete Fabularium session.
-  // If the product later supports a browse-only mode, this can become
-  // configurable without changing the authentication screens.
   static const bool telegramRequired =
       true;
 
@@ -43,13 +40,10 @@ class FabulariumSessionService
   bool _initialized =
       false;
 
-  bool _checkingTelegram =
+  bool _fabulariumConfirmedForRun =
       false;
 
   bool _signingOut =
-      false;
-
-  bool _clearingOrphanTelegram =
       false;
 
   Object? _error;
@@ -57,11 +51,11 @@ class FabulariumSessionService
   bool get isInitialized =>
       _initialized;
 
-  bool get isCheckingTelegram =>
-      _checkingTelegram;
-
   bool get isSigningOut =>
       _signingOut;
+
+  bool get isFabulariumConfirmedForRun =>
+      _fabulariumConfirmedForRun;
 
   Object? get error =>
       _error;
@@ -90,7 +84,8 @@ class FabulariumSessionService
           .configurationError;
     }
 
-    if (!_auth.isSignedIn) {
+    if (!_auth.isSignedIn ||
+        !_fabulariumConfirmedForRun) {
       return FabulariumSessionStage
           .fabulariumAuthentication;
     }
@@ -123,52 +118,77 @@ class FabulariumSessionService
       _onFabulariumAuthChanged,
     );
 
+    // Every desktop process starts at the Fabularium step.
+    //
+    // If Supabase restored a valid session, the login page will offer
+    // "Continue" instead of making the user type credentials again.
+    //
+    // IMPORTANT: we deliberately do NOT connect Telegram here. Telegram
+    // networking starts only after the Telegram page is visible, matching
+    // the old flow that was already validated.
+    _fabulariumConfirmedForRun =
+        false;
+
     _initialized =
         true;
 
-    try {
-      if (_auth.isSignedIn) {
-        await ensureTelegramSession();
-      } else {
-        await _clearOrphanTelegramSession();
-      }
-
-      _error =
-          null;
-    } catch (error) {
-      _error =
-          error;
-    } finally {
-      notifyListeners();
-    }
+    notifyListeners();
   }
 
-  Future<void> ensureTelegramSession() async {
-    if (!telegramRequired ||
-        !_auth.isSignedIn ||
-        _telegram.isAuthenticated ||
-        _checkingTelegram) {
+  void confirmFabulariumSession() {
+    if (!_auth.isSignedIn) {
       return;
     }
 
-    _checkingTelegram =
+    _fabulariumConfirmedForRun =
         true;
 
     _error =
         null;
 
     notifyListeners();
+  }
+
+  Future<void> useAnotherFabulariumAccount() async {
+    _fabulariumConfirmedForRun =
+        false;
+
+    Object? firstError;
 
     try {
-      await _telegram.connect();
-    } catch (error) {
-      _error =
-          error;
+      try {
+        await _downloads
+            .resetForSessionEnd();
+      } catch (error) {
+        firstError ??=
+            error;
+      }
+
+      try {
+        await _telegram.logout();
+      } catch (error) {
+        firstError ??=
+            error;
+      }
+
+      try {
+        await _auth.signOut();
+      } catch (error) {
+        firstError ??=
+            error;
+      }
     } finally {
-      _checkingTelegram =
-          false;
+      _error =
+          firstError;
 
       notifyListeners();
+    }
+
+    if (firstError != null) {
+      throw FabulariumSessionException(
+        'Could not completely change account: '
+        '$firstError',
+      );
     }
   }
 
@@ -179,6 +199,9 @@ class FabulariumSessionService
 
     _signingOut =
         true;
+
+    _fabulariumConfirmedForRun =
+        false;
 
     _error =
         null;
@@ -227,46 +250,13 @@ class FabulariumSessionService
     }
   }
 
-  Future<void> _clearOrphanTelegramSession() async {
-    if (_clearingOrphanTelegram ||
-        _auth.isSignedIn) {
-      return;
-    }
-
-    if (!_telegram.hasSavedSession &&
-        !_telegram.isAuthenticated) {
-      return;
-    }
-
-    _clearingOrphanTelegram =
-        true;
-
-    try {
-      await _telegram.logout();
-    } finally {
-      _clearingOrphanTelegram =
+  void _onFabulariumAuthChanged() {
+    if (!_auth.isSignedIn) {
+      _fabulariumConfirmedForRun =
           false;
     }
-  }
 
-  void _onFabulariumAuthChanged() {
     notifyListeners();
-
-    if (_signingOut) {
-      return;
-    }
-
-    if (_auth.isSignedIn) {
-      unawaited(
-        ensureTelegramSession(),
-      );
-
-      return;
-    }
-
-    unawaited(
-      _clearOrphanTelegramSession(),
-    );
   }
 
   @override

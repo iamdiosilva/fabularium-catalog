@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/fabularium_session_service.dart';
@@ -17,6 +19,11 @@ class TelegramConnectionPage
 
 class _TelegramConnectionPageState
     extends State<TelegramConnectionPage> {
+  static const Duration _watchdogDuration =
+      Duration(
+    seconds: 25,
+  );
+
   final FabulariumSessionService _session =
       FabulariumSessionService.instance;
 
@@ -35,8 +42,45 @@ class _TelegramConnectionPageState
   final TextEditingController _password =
       TextEditingController();
 
+  StreamSubscription<TelegramAuthState>?
+      _subscription;
+
+  Timer? _watchdog;
+
+  bool _watchdogExpired =
+      false;
+
+  bool _resetting =
+      false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _subscription =
+        _telegram.stateStream.listen(
+      (
+        _,
+      ) {
+        if (!mounted) {
+          return;
+        }
+
+        _syncWatchdog();
+
+        setState(() {});
+      },
+    );
+
+    _connect();
+  }
+
   @override
   void dispose() {
+    _watchdog?.cancel();
+
+    _subscription?.cancel();
+
     _phone.dispose();
     _code.dispose();
     _password.dispose();
@@ -44,9 +88,135 @@ class _TelegramConnectionPageState
     super.dispose();
   }
 
+  Future<void> _connect() async {
+    _watchdogExpired =
+        false;
+
+    _startWatchdog();
+
+    if (mounted) {
+      setState(() {});
+    }
+
+    await _telegram.connect();
+
+    _syncWatchdog();
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _startWatchdog() {
+    _watchdog?.cancel();
+
+    _watchdog =
+        Timer(
+      _watchdogDuration,
+      () {
+        if (!mounted ||
+            _telegram.state !=
+                TelegramAuthState.connecting) {
+          return;
+        }
+
+        setState(() {
+          _watchdogExpired =
+              true;
+        });
+      },
+    );
+  }
+
+  void _syncWatchdog() {
+    if (_telegram.state ==
+        TelegramAuthState.connecting) {
+      if (_watchdog ==
+              null ||
+          !_watchdog!.isActive) {
+        _startWatchdog();
+      }
+
+      return;
+    }
+
+    _watchdog?.cancel();
+
+    _watchdog =
+        null;
+
+    _watchdogExpired =
+        false;
+  }
+
+  Future<void> _resetTelegram() async {
+    if (_resetting) {
+      return;
+    }
+
+    setState(() {
+      _resetting =
+          true;
+
+      _watchdogExpired =
+          false;
+    });
+
+    try {
+      await _telegram
+          .logout()
+          .timeout(
+        const Duration(
+          seconds: 8,
+        ),
+      );
+
+      await _connect();
+    } on TimeoutException {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(
+        const SnackBar(
+          content:
+              Text(
+            'Telegram connection did not close in time. '
+            'Close Fabularium completely and open it again, then retry.',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(
+        SnackBar(
+          content:
+              Text(
+            error.toString(),
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _resetting =
+              false;
+        });
+      }
+    }
+  }
+
   Future<void> _useAnotherAccount() async {
     try {
-      await _session.signOutAll();
+      await _session
+          .useAnotherFabulariumAccount();
     } catch (error) {
       if (!mounted) {
         return;
@@ -165,7 +335,7 @@ class _TelegramConnectionPageState
                         ),
                         const Text(
                           'Fabularium uses Telegram as the transfer network for large files. '
-                          'This connection is part of your Fabularium session and must be completed before entering the app.',
+                          'This connection must be ready before entering the app.',
                           textAlign:
                               TextAlign.center,
                         ),
@@ -174,7 +344,7 @@ class _TelegramConnectionPageState
                               8,
                         ),
                         const Text(
-                          'You will not need to browse channels or use Telegram separately.',
+                          'You do not need to browse channels or use Telegram separately.',
                           textAlign:
                               TextAlign.center,
                         ),
@@ -214,32 +384,109 @@ class _TelegramConnectionPageState
   }
 
   Widget _buildState() {
-    if (_session.isCheckingTelegram ||
+    if (_watchdogExpired &&
         _telegram.state ==
             TelegramAuthState.connecting) {
-      return const Center(
-        child:
-            Column(
-          mainAxisSize:
-              MainAxisSize.min,
-          children:
-              <Widget>[
-            CircularProgressIndicator(),
-            SizedBox(
-              height:
-                  12,
+      return Column(
+        crossAxisAlignment:
+            CrossAxisAlignment.stretch,
+        children:
+            <Widget>[
+          Icon(
+            Icons.cloud_off_outlined,
+            size:
+                42,
+            color:
+                Theme.of(
+              context,
+            )
+                    .colorScheme
+                    .error,
+          ),
+          const SizedBox(
+            height:
+                12,
+          ),
+          Text(
+            'Telegram connection is taking longer than expected.',
+            textAlign:
+                TextAlign.center,
+            style:
+                TextStyle(
+              color:
+                  Theme.of(
+                context,
+              )
+                      .colorScheme
+                      .error,
             ),
-            Text(
-              'Checking saved Telegram session...',
+          ),
+          const SizedBox(
+            height:
+                8,
+          ),
+          const Text(
+            'Reset the Telegram session and start a clean login.',
+            textAlign:
+                TextAlign.center,
+          ),
+          const SizedBox(
+            height:
+                18,
+          ),
+          FilledButton.tonalIcon(
+            onPressed:
+                _resetting
+                    ? null
+                    : _resetTelegram,
+            icon:
+                _resetting
+                    ? const SizedBox(
+                        width:
+                            18,
+                        height:
+                            18,
+                        child:
+                            CircularProgressIndicator(
+                          strokeWidth:
+                              2,
+                        ),
+                      )
+                    : const Icon(
+                        Icons.restart_alt,
+                      ),
+            label:
+                const Text(
+              'Reset Telegram Session',
             ),
-          ],
-        ),
+          ),
+        ],
       );
     }
 
     switch (_telegram.state) {
-      case TelegramAuthState.disconnected:
+      case TelegramAuthState.connecting:
+        return const Center(
+          child:
+              Column(
+            mainAxisSize:
+                MainAxisSize.min,
+            children:
+                <Widget>[
+              CircularProgressIndicator(),
+              SizedBox(
+                height:
+                    12,
+              ),
+              Text(
+                'Connecting to Telegram...',
+              ),
+            ],
+          ),
+        );
+
       case TelegramAuthState.phoneRequired:
+      case TelegramAuthState.disconnected:
         return _form(
           title:
               'Phone number',
@@ -292,6 +539,30 @@ class _TelegramConnectionPageState
           ),
         );
 
+      case TelegramAuthState.authenticated:
+        return const Center(
+          child:
+              Column(
+            mainAxisSize:
+                MainAxisSize.min,
+            children:
+                <Widget>[
+              Icon(
+                Icons.check_circle_outline,
+                size:
+                    48,
+              ),
+              SizedBox(
+                height:
+                    10,
+              ),
+              Text(
+                'Telegram connected. Opening Fabularium...',
+              ),
+            ],
+          ),
+        );
+
       case TelegramAuthState.error:
         return Column(
           crossAxisAlignment:
@@ -319,7 +590,7 @@ class _TelegramConnectionPageState
             ),
             FilledButton.tonalIcon(
               onPressed:
-                  _session.ensureTelegramSession,
+                  _connect,
               icon:
                   const Icon(
                 Icons.refresh,
@@ -329,35 +600,26 @@ class _TelegramConnectionPageState
                 'Try Again',
               ),
             ),
+            const SizedBox(
+              height:
+                  8,
+            ),
+            TextButton.icon(
+              onPressed:
+                  _resetting
+                      ? null
+                      : _resetTelegram,
+              icon:
+                  const Icon(
+                Icons.restart_alt,
+              ),
+              label:
+                  const Text(
+                'Reset Telegram Session',
+              ),
+            ),
           ],
         );
-
-      case TelegramAuthState.authenticated:
-        return const Center(
-          child:
-              Column(
-            mainAxisSize:
-                MainAxisSize.min,
-            children:
-                <Widget>[
-              Icon(
-                Icons.check_circle_outline,
-                size:
-                    48,
-              ),
-              SizedBox(
-                height:
-                    10,
-              ),
-              Text(
-                'Telegram connected. Opening Fabularium...',
-              ),
-            ],
-          ),
-        );
-
-      case TelegramAuthState.connecting:
-        return const SizedBox.shrink();
     }
   }
 
