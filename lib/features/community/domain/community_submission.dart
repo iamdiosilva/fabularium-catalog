@@ -17,7 +17,9 @@ class CommunitySubmission {
   final String? archiveSha256;
   final String? contentFingerprint;
   final String? storageKey;
+  final String? uploadError;
   final DateTime submittedAt;
+  final DateTime? uploadedAt;
   final DateTime? reviewedAt;
   final String? reviewNote;
 
@@ -40,10 +42,21 @@ class CommunitySubmission {
     required this.archiveSha256,
     required this.contentFingerprint,
     required this.storageKey,
+    required this.uploadError,
     required this.submittedAt,
+    required this.uploadedAt,
     required this.reviewedAt,
     required this.reviewNote,
   });
+
+  bool get isUploading =>
+      status == 'uploading';
+
+  bool get isUploaded =>
+      status == 'uploaded';
+
+  bool get isProcessing =>
+      status == 'processing';
 
   bool get isPendingReview =>
       status == 'pending_review' ||
@@ -57,67 +70,129 @@ class CommunitySubmission {
   bool get isRejected =>
       status == 'rejected';
 
+  bool get isFailed =>
+      status == 'failed';
+
+  bool get canRetryUpload =>
+      isUploading ||
+      isFailed;
+
   factory CommunitySubmission.fromJson(
     Map<String, dynamic> json,
   ) {
-    final rawTags = json['tags'];
-    final tags = <String>[];
+    final rawTags =
+        json['tags'];
+
+    final tags =
+        <String>[];
 
     if (rawTags is List) {
       for (final tag in rawTags) {
         final value =
-            tag?.toString().trim() ?? '';
+            tag?.toString().trim() ??
+                '';
 
         if (value.isNotEmpty) {
-          tags.add(value);
+          tags.add(
+            value,
+          );
         }
       }
     }
 
     return CommunitySubmission(
       id:
-          json['id']?.toString() ?? '',
+          json['id']?.toString() ??
+              '',
       submittedBy:
-          json['submitted_by']?.toString() ?? '',
+          json['submitted_by']
+                  ?.toString() ??
+              '',
       name:
-          json['name']?.toString() ?? '',
+          json['name']?.toString() ??
+              '',
       studio:
-          _nullableString(json['studio']),
+          _nullableString(
+        json['studio'],
+      ),
       category:
-          _nullableString(json['category']),
+          _nullableString(
+        json['category'],
+      ),
       type:
-          _nullableString(json['model_type']),
+          _nullableString(
+        json['model_type'],
+      ),
       scale:
-          _nullableString(json['scale']),
+          _nullableString(
+        json['scale'],
+      ),
       height:
-          _nullableString(json['height']),
+          _nullableString(
+        json['height'],
+      ),
       description:
-          _nullableString(json['description']),
+          _nullableString(
+        json['description'],
+      ),
       tags:
           tags,
       status:
-          json['status']?.toString() ?? 'uploading',
+          json['status']
+                  ?.toString() ??
+              'uploading',
       duplicateStatus:
-          json['duplicate_status']?.toString() ?? 'unchecked',
+          json['duplicate_status']
+                  ?.toString() ??
+              'unchecked',
       duplicateOfModelId:
-          _nullableString(json['duplicate_of_model_id']),
+          _nullableString(
+        json['duplicate_of_model_id'],
+      ),
       archiveFileName:
-          _nullableString(json['archive_file_name']),
+          _nullableString(
+        json['archive_file_name'],
+      ),
       archiveSize:
-          _readInt(json['archive_size']),
+          _readInt(
+        json['archive_size'],
+      ),
       archiveSha256:
-          _nullableString(json['archive_sha256']),
+          _nullableString(
+        json['archive_sha256'],
+      ),
       contentFingerprint:
-          _nullableString(json['content_fingerprint']),
+          _nullableString(
+        json['content_fingerprint'],
+      ),
       storageKey:
-          _nullableString(json['storage_key']),
+          _nullableString(
+        json['storage_key'],
+      ),
+      uploadError:
+          _nullableString(
+        json['upload_error'],
+      ),
       submittedAt:
-          _readDate(json['submitted_at']) ??
-              DateTime.fromMillisecondsSinceEpoch(0),
+          _readDate(
+            json['submitted_at'],
+          ) ??
+          DateTime
+              .fromMillisecondsSinceEpoch(
+            0,
+          ),
+      uploadedAt:
+          _readDate(
+        json['uploaded_at'],
+      ),
       reviewedAt:
-          _readDate(json['reviewed_at']),
+          _readDate(
+        json['reviewed_at'],
+      ),
       reviewNote:
-          _nullableString(json['review_note']),
+          _nullableString(
+        json['review_note'],
+      ),
     );
   }
 }
@@ -137,7 +212,9 @@ int _readInt(dynamic value) {
       0;
 }
 
-DateTime? _readDate(dynamic value) {
+DateTime? _readDate(
+  dynamic value,
+) {
   if (value == null) {
     return null;
   }
@@ -147,9 +224,12 @@ DateTime? _readDate(dynamic value) {
   );
 }
 
-String? _nullableString(dynamic value) {
+String? _nullableString(
+  dynamic value,
+) {
   final text =
-      value?.toString().trim() ?? '';
+      value?.toString().trim() ??
+          '';
 
   return text.isEmpty
       ? null

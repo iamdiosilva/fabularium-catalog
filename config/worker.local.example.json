@@ -1,0 +1,8 @@
+{
+  "SUPABASE_URL": "https://YOUR_PROJECT_REF.supabase.co",
+  "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_...",
+  "SUPABASE_SECRET_KEY": "sb_secret_...",
+  "FABULARIUM_WORKER_HOST": "127.0.0.1",
+  "FABULARIUM_WORKER_PORT": 8787,
+  "FABULARIUM_WORKER_DATA_DIR": "D:\\FabulariumWorker"
+}

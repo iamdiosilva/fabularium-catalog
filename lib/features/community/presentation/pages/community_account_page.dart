@@ -4,6 +4,7 @@ import '../../../../services/supabase_service.dart';
 import '../../application/community_auth_service.dart';
 import '../../domain/community_profile.dart';
 import 'community_moderation_page.dart';
+import 'community_my_submissions_page.dart';
 
 class CommunityAccountPage
     extends StatefulWidget {
@@ -774,6 +775,23 @@ class _CommunityAccountPageState
                         ),
                         label: const Text(
                           'Edit Profile',
+                        ),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: () {
+                          Navigator.of(context)
+                              .push(
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  const CommunityMySubmissionsPage(),
+                            ),
+                          );
+                        },
+                        icon: const Icon(
+                          Icons.upload_file_outlined,
+                        ),
+                        label: const Text(
+                          'My Submissions',
                         ),
                       ),
                       if (_auth.isAdmin)

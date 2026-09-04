@@ -42,7 +42,8 @@ class CommunityRepository {
   }
 
   Future<bool> isCurrentUserAdmin() async {
-    final raw = await _client.rpc(
+    final raw =
+        await _client.rpc(
       'is_fabularium_admin',
     );
 
@@ -50,7 +51,9 @@ class CommunityRepository {
       return raw;
     }
 
-    return raw?.toString().toLowerCase() ==
+    return raw
+            ?.toString()
+            .toLowerCase() ==
         'true';
   }
 
@@ -62,30 +65,46 @@ class CommunityRepository {
     String? bio,
   }) async {
     await _client
-        .from('fabularium_profiles')
+        .from(
+          'fabularium_profiles',
+        )
         .update(
           <String, dynamic>{
             'username': username,
-            'display_name': displayName,
-            'avatar_url': _emptyToNull(avatarUrl),
-            'bio': _emptyToNull(bio),
+            'display_name':
+                displayName,
+            'avatar_url':
+                _emptyToNull(
+              avatarUrl,
+            ),
+            'bio':
+                _emptyToNull(
+              bio,
+            ),
           },
         )
-        .eq('user_id', userId);
+        .eq(
+          'user_id',
+          userId,
+        );
   }
 
   Future<String> createSubmission({
     required Map<String, dynamic> payload,
   }) async {
-    final raw = await _client.rpc(
+    final raw =
+        await _client.rpc(
       'create_fabularium_submission',
-      params: <String, dynamic>{
-        'payload': payload,
+      params:
+          <String, dynamic>{
+        'payload':
+            payload,
       },
     );
 
     final id =
-        raw?.toString().trim() ?? '';
+        raw?.toString().trim() ??
+            '';
 
     if (id.isEmpty) {
       throw const CommunityRepositoryException(
@@ -98,44 +117,86 @@ class CommunityRepository {
 
   Future<List<CommunitySubmission>>
       loadMySubmissions() async {
-    final user = _client.auth.currentUser;
+    final user =
+        _client.auth.currentUser;
 
     if (user == null) {
-      return const <CommunitySubmission>[];
+      return const <
+          CommunitySubmission>[];
     }
 
-    final raw = await _client
-        .from('fabularium_submissions')
-        .select()
-        .eq('submitted_by', user.id)
-        .order(
-          'submitted_at',
-          ascending: false,
-        );
+    final raw =
+        await _client
+            .from(
+              'fabularium_submissions',
+            )
+            .select()
+            .eq(
+              'submitted_by',
+              user.id,
+            )
+            .order(
+              'submitted_at',
+              ascending: false,
+            );
 
-    return _mapSubmissions(raw);
+    return _mapSubmissions(
+      raw,
+    );
+  }
+
+  Future<CommunitySubmission?>
+      loadSubmission(
+    String submissionId,
+  ) async {
+    final raw =
+        await _client
+            .from(
+              'fabularium_submissions',
+            )
+            .select()
+            .eq(
+              'id',
+              submissionId,
+            )
+            .maybeSingle();
+
+    if (raw == null) {
+      return null;
+    }
+
+    return CommunitySubmission.fromJson(
+      Map<String, dynamic>.from(
+        raw,
+      ),
+    );
   }
 
   Future<List<CommunitySubmission>>
       loadModerationQueue() async {
-    final raw = await _client
-        .from('fabularium_submissions')
-        .select()
-        .inFilter(
-          'status',
-          <String>[
-            'pending_review',
-            'duplicate_suspected',
-            'approved',
-            'publishing',
-          ],
-        )
-        .order(
-          'submitted_at',
-          ascending: true,
-        );
+    final raw =
+        await _client
+            .from(
+              'fabularium_submissions',
+            )
+            .select()
+            .inFilter(
+              'status',
+              <String>[
+                'pending_review',
+                'duplicate_suspected',
+                'approved',
+                'publishing',
+              ],
+            )
+            .order(
+              'submitted_at',
+              ascending: true,
+            );
 
-    return _mapSubmissions(raw);
+    return _mapSubmissions(
+      raw,
+    );
   }
 
   Future<void> reviewSubmission({
@@ -146,12 +207,20 @@ class CommunityRepository {
   }) async {
     await _client.rpc(
       'review_fabularium_submission',
-      params: <String, dynamic>{
-        'target_submission_id': submissionId,
-        'decision': decision,
-        'note': _emptyToNull(note),
+      params:
+          <String, dynamic>{
+        'target_submission_id':
+            submissionId,
+        'decision':
+            decision,
+        'note':
+            _emptyToNull(
+          note,
+        ),
         'duplicate_of':
-            _emptyToNull(duplicateOfModelId),
+            _emptyToNull(
+          duplicateOfModelId,
+        ),
       },
     );
   }
@@ -161,8 +230,10 @@ class CommunityRepository {
   ) async {
     await _client.rpc(
       'analyze_fabularium_submission',
-      params: <String, dynamic>{
-        'target_submission_id': submissionId,
+      params:
+          <String, dynamic>{
+        'target_submission_id':
+            submissionId,
       },
     );
   }
@@ -170,18 +241,30 @@ class CommunityRepository {
   Future<bool> hasLikedModel(
     String modelId,
   ) async {
-    final user = _client.auth.currentUser;
+    final user =
+        _client.auth.currentUser;
 
     if (user == null) {
       return false;
     }
 
-    final raw = await _client
-        .from('fabularium_likes')
-        .select('model_id')
-        .eq('model_id', modelId)
-        .eq('user_id', user.id)
-        .maybeSingle();
+    final raw =
+        await _client
+            .from(
+              'fabularium_likes',
+            )
+            .select(
+              'model_id',
+            )
+            .eq(
+              'model_id',
+              modelId,
+            )
+            .eq(
+              'user_id',
+              user.id,
+            )
+            .maybeSingle();
 
     return raw != null;
   }
@@ -189,10 +272,18 @@ class CommunityRepository {
   Future<int> loadModelLikeCount(
     String modelId,
   ) async {
-    final raw = await _client
-        .from('fabularium_likes')
-        .select('user_id')
-        .eq('model_id', modelId);
+    final raw =
+        await _client
+            .from(
+              'fabularium_likes',
+            )
+            .select(
+              'user_id',
+            )
+            .eq(
+              'model_id',
+              modelId,
+            );
 
     return raw.length;
   }
@@ -200,7 +291,8 @@ class CommunityRepository {
   Future<void> likeModel(
     String modelId,
   ) async {
-    final user = _client.auth.currentUser;
+    final user =
+        _client.auth.currentUser;
 
     if (user == null) {
       throw const CommunityRepositoryException(
@@ -209,11 +301,15 @@ class CommunityRepository {
     }
 
     await _client
-        .from('fabularium_likes')
+        .from(
+          'fabularium_likes',
+        )
         .insert(
           <String, dynamic>{
-            'model_id': modelId,
-            'user_id': user.id,
+            'model_id':
+                modelId,
+            'user_id':
+                user.id,
           },
         );
   }
@@ -221,33 +317,47 @@ class CommunityRepository {
   Future<void> unlikeModel(
     String modelId,
   ) async {
-    final user = _client.auth.currentUser;
+    final user =
+        _client.auth.currentUser;
 
     if (user == null) {
       return;
     }
 
     await _client
-        .from('fabularium_likes')
+        .from(
+          'fabularium_likes',
+        )
         .delete()
-        .eq('model_id', modelId)
-        .eq('user_id', user.id);
+        .eq(
+          'model_id',
+          modelId,
+        )
+        .eq(
+          'user_id',
+          user.id,
+        );
   }
 
-  List<CommunitySubmission> _mapSubmissions(
+  List<CommunitySubmission>
+      _mapSubmissions(
     dynamic raw,
   ) {
     if (raw is! List) {
-      return const <CommunitySubmission>[];
+      return const <
+          CommunitySubmission>[];
     }
 
-    final result = <CommunitySubmission>[];
+    final result =
+        <CommunitySubmission>[];
 
     for (final item in raw) {
       if (item is Map) {
         result.add(
           CommunitySubmission.fromJson(
-            Map<String, dynamic>.from(item),
+            Map<String, dynamic>.from(
+              item,
+            ),
           ),
         );
       }
@@ -277,5 +387,6 @@ class CommunityRepositoryException
   );
 
   @override
-  String toString() => message;
+  String toString() =>
+      message;
 }

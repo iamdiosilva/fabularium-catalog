@@ -50,4 +50,7 @@ telegram_auth.json
 *.part
 
 # Fabularium local Supabase configuration
-/lib/config/supabase.local.json
+config/supabase.local.json
+
+# Fabularium Worker local secrets
+config/worker.local.json
