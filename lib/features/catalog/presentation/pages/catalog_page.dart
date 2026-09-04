@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../../../../models/catalog_model.dart';
+import '../../../../pages/community_account_page.dart';
 import '../../../../pages/model_detail_page.dart';
 import '../../../../pages/pending_models_page.dart';
 import '../../../../pages/telegram_catalog_page.dart';
 import '../../../../pages/telegram_login_page.dart';
+import '../../../community/application/community_auth_service.dart';
 import '../../application/catalog_controller.dart';
 import '../widgets/catalog_model_card.dart';
 
@@ -137,6 +139,15 @@ class _CatalogPageState
         .refreshAllTelegramStatuses();
   }
 
+  void _openCommunityAccount() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            const CommunityAccountPage(),
+      ),
+    );
+  }
+
   @override
   Widget build(
     BuildContext context,
@@ -165,6 +176,40 @@ class _CatalogPageState
                 ),
               ),
             ),
+          AnimatedBuilder(
+            animation:
+                CommunityAuthService.instance,
+            builder: (
+              context,
+              _,
+            ) {
+              final auth =
+                  CommunityAuthService.instance;
+
+              final tooltip = auth.isSignedIn
+                  ? auth.profile?.username !=
+                              null
+                      ? '@${auth.profile!.username}'
+                      : 'Fabularium Account'
+                  : 'Sign in to Fabularium';
+
+              return IconButton(
+                tooltip: tooltip,
+                onPressed:
+                    _openCommunityAccount,
+                icon: Icon(
+                  auth.isAdmin
+                      ? Icons
+                          .admin_panel_settings_outlined
+                      : auth.isSignedIn
+                          ? Icons
+                              .account_circle_outlined
+                          : Icons
+                              .person_add_alt_outlined,
+                ),
+              );
+            },
+          ),
           IconButton(
             tooltip:
                 'Refresh Telegram Status',

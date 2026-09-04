@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'config/fabularium_config.dart';
+import 'features/community/application/community_auth_service.dart';
 import 'pages/catalog_page.dart';
 import 'pages/download_queue_page.dart';
 import 'services/performance_monitor.dart';
@@ -17,6 +18,9 @@ Future<void> main() async {
       .ensureInitialized();
 
   await SupabaseService.instance
+      .initialize();
+
+  await CommunityAuthService.instance
       .initialize();
 
   PerformanceMonitor.instance
